@@ -1,0 +1,14 @@
+{
+  "name": "course-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "start": "node --disable-warning=ExperimentalWarning server.mjs",
+    "scan": "node --disable-warning=ExperimentalWarning scanner.mjs",
+    "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --import ./scripts/test-setup.mjs --test tests/*.test.mjs"
+  },
+  "engines": {"node": ">=24"}
+}

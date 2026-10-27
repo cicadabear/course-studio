@@ -1,0 +1,16 @@
+{
+  "title": "Course Studio",
+  "host": "127.0.0.1",
+  "port": 3000,
+  "mediaRoot": "./media/courses",
+  "mediaRoots": ["./media/youth"],
+  "collections": [
+    {"root": "./media/courses", "label": "课程", "shelf": "courses"},
+    {"root": "./media/youth", "label": "少年课程", "shelf": "youth"}
+  ],
+  "scanRulesFile": "",
+  "trustedProxies": [],
+  "publicHosts": [],
+  "tlsDir": "",
+  "tlsPort": 3443
+}

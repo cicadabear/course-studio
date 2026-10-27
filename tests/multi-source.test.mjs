@@ -1,0 +1,90 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {openStore,PROJECT} from '../store.mjs';
+import {scan,inspectSource,courseInfo,importTitle} from '../scanner.mjs';
+import {createApp} from '../server.mjs';
+
+test('incremental sources preserve old IDs/progress and enforce media root boundaries',async t=>{
+  const temp=await fs.mkdtemp(path.join(PROJECT,'artifacts','multi-source-'));
+  const a=path.join(temp,'a'),b=path.join(temp,'b'),folder='Test《Source》';
+  for(const root of [a,b])await fs.mkdir(path.join(root,folder),{recursive:true});
+  await fs.writeFile(path.join(a,folder,'01 Lesson.mp3'),'original-audio');
+  await fs.writeFile(path.join(b,folder,'19.0519丨01 Lesson.mp3'),'new-audio-data');
+  await fs.writeFile(path.join(b,folder,'0518丨01 Lesson.pdf'),'%PDF-1.4 source-b');
+  await fs.writeFile(path.join(b,folder,'02 Empty.mp3'),'');
+  await fs.mkdir(path.join(b,'Empty folder'));
+  const db=openStore(path.join(temp,'test.sqlite'));
+  let server;
+  t.after(async()=>{if(server)await new Promise(r=>server.close(r));db.close();await fs.rm(temp,{recursive:true,force:true})});
+  const reportPath=path.join(temp,'report.json'),opts={reportPath};
+  await scan(db,a,()=>{},opts);
+  const old=db.prepare('SELECT * FROM lessons WHERE active=1').get();
+  const user=Number(db.prepare('INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)').run('Tester','unused',0).lastInsertRowid);
+  db.prepare('INSERT INTO progress(user_id,lesson_id,position,updated_at) VALUES(?,?,?,?)').run(user,old.id,12,10);
+  await scan(null,b,()=>{},{...opts,dryRun:true});
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM courses').get().n,1);
+  const first=await scan(db,b,()=>{},opts);
+  assert.equal(first.courses,2);
+  assert.deepEqual(db.prepare('SELECT * FROM lessons WHERE id=?').get(old.id),old);
+  assert.equal(db.prepare('SELECT position FROM progress WHERE lesson_id=?').get(old.id).position,12);
+  const report=JSON.parse(await fs.readFile(reportPath,'utf8')).sources[0];
+  assert.ok(report.issues.some(i=>i.code==='ZERO_BYTE_FILE'));
+  assert.ok(report.issues.some(i=>i.code==='NO_SUPPORTED_CONTENT'));
+  assert.equal(report.courses.flatMap(c=>c.repairs).filter(r=>r.code==='PAIRED_DOCUMENT').length,1);
+  const added=db.prepare('SELECT * FROM lessons WHERE id!=? AND active=1').get(old.id);
+  assert.ok(added.primary_file&&added.document_file);
+  assert.notEqual(added.course_id,old.course_id);
+  await scan(db,b,()=>{},opts);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM lessons WHERE active=1').get().n,2);
+  const token=crypto.randomBytes(16).toString('hex');
+  db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(crypto.createHash('sha256').update(token).digest('hex'),user,Date.now()+60000);
+  server=createApp(db,a,{mediaRoots:[a,b]});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const origin='http://127.0.0.1:'+server.address().port;
+  const headers={Cookie:'sid='+token,Range:'bytes=0-2'};
+  for(const [file,text] of [[old.primary_file,'ori'],[added.primary_file,'new'],[added.document_file,'%PD']]){
+    const res=await fetch(origin+'/media/'+file,{headers});
+    assert.equal(res.status,206);
+    assert.equal(await res.text(),text);
+  }
+  db.prepare('UPDATE files SET source_root=? WHERE id=?').run(temp,added.primary_file);
+  assert.equal((await fetch(origin+'/media/'+added.primary_file,{headers})).status,403);
+  db.prepare('UPDATE files SET source_root=?,relative_path=? WHERE id=?').run(b,'../a/'+folder+'/01 Lesson.mp3',added.primary_file);
+  assert.equal((await fetch(origin+'/media/'+added.primary_file,{headers})).status,403);
+  await fs.unlink(path.join(b,folder,'19.0519丨01 Lesson.mp3'));
+  await scan(db,b,()=>{},opts);
+  assert.equal(db.prepare('SELECT active FROM lessons WHERE id=?').get(old.id).active,1);
+  assert.equal(db.prepare('SELECT active FROM lessons WHERE id=?').get(added.id).active,0);
+});
+
+test('import title and metadata handle source naming anomalies',()=>{
+  assert.equal(importTitle('xh-19.1024丨01丨Test_20190720_234345'),'01丨Test');
+  assert.equal(importTitle('0114丨02｜Energy'),'02｜Energy');
+  assert.equal(courseInfo('￥49.9元-Author·《Title》（完结）').price,49.9);
+  assert.equal(courseInfo('￥99元-Author·《《Title》（完结）').title,'Title');
+  assert.equal(courseInfo('￥99元-Author·《Title40讲）（完结）').title,'Title40讲');
+});
+
+test('duplicate bytes, transcript variants and numbered releases are reported without duplicate lessons',async t=>{
+  const temp=await fs.mkdtemp(path.join(PROJECT,'artifacts','pairing-'));
+  t.after(()=>fs.rm(temp,{recursive:true,force:true}));
+  const dir=path.join(temp,'Teacher《Course》');
+  await fs.mkdir(path.join(dir,'section'),{recursive:true});
+  await fs.writeFile(path.join(dir,'19.0519丨01 Same.mp3'),'duplicate-audio');
+  await fs.writeFile(path.join(dir,'section','19.0519丨01 Same.mp3'),'duplicate-audio');
+  await fs.writeFile(path.join(dir,'19.0519丨01 Same.pdf'),'%PDF version one');
+  await fs.writeFile(path.join(dir,'section','0518丨01 Same.pdf'),'%PDF version two');
+  await fs.writeFile(path.join(dir,'section','19.0520丨02 Original title.mp3'),'audio-two');
+  await fs.writeFile(path.join(dir,'section','19.0520丨02 Different heading.pdf'),'%PDF transcript');
+  const {all,report}=await inspectSource(temp,()=>{});
+  assert.equal(all[0].lessons.length,2);
+  assert.ok(all[0].lessons.every(l=>l.primary&&l.document));
+  const repairs=report.courses[0].repairs;
+  assert.equal(repairs.filter(r=>r.code==='IDENTICAL_AUDIO_COPY').length,1);
+  assert.equal(repairs.filter(r=>r.code==='DOCUMENT_VARIANT').length,1);
+  assert.ok(repairs.some(r=>r.rule==='unique-section-number-date'));
+  assert.equal(all[0].lessons.find(l=>l.title==='01 Same').group.filter(f=>f.ext==='.pdf').length,2);
+});
