@@ -10,7 +10,5 @@
   ],
   "scanRulesFile": "",
   "trustedProxies": [],
-  "publicHosts": [],
-  "tlsDir": "",
-  "tlsPort": 3443
+  "publicHosts": []
 }

@@ -1,5 +1,4 @@
 import http from 'node:http';
-import https from 'node:https';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -370,19 +369,8 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const db=openStore();
   if(!db.prepare("SELECT value FROM meta WHERE key='scan'").get())await scan(db);
   const port=Number(process.env.PORT||config.port),host=process.env.HOST||config.host;
-  const servers=[createApp(db)];
-  servers[0].listen(port,host,()=>console.log('知行课程已启动 http://localhost:'+port+''));
-  // 配置了 tlsDir 时再开一个 HTTPS 端口，证书放在 tlsDir/server.key 与 server.crt。
-  if(config.tlsDir) {
-    const dir=path.resolve(PROJECT,config.tlsDir),tlsPort=Number(process.env.TLS_PORT||config.tlsPort||3443);
-    const key=path.join(dir,'server.key'),crt=path.join(dir,'server.crt');
-    if(fs.existsSync(key)&&fs.existsSync(crt)) {
-      const httpsServer=https.createServer({key:fs.readFileSync(key),cert:fs.readFileSync(crt)},createHandler(db));
-      httpsServer.setTimeout(0);
-      httpsServer.listen(tlsPort,host,()=>console.log('知行课程 HTTPS 已启动 https://localhost:'+tlsPort));
-      servers.push(httpsServer);
-    }else console.warn('已配置 tlsDir 但缺少 '+crt+' / '+key+'，HTTPS 未启动');
-  }
+  const server=createApp(db);
+  server.listen(port,host,()=>console.log('知行课程已启动 http://localhost:'+port));
   const stop=()=>{db.close();process.exit(0)};
   process.on('SIGINT',stop);process.on('SIGTERM',stop);
 }

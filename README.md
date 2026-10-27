@@ -24,7 +24,6 @@ npm start
 - `collections`：目录名称与分组；`shelf` 为 `courses` 或 `youth`，分别显示在课程和少年课程中。
 - `host` / `port`：默认仅本机访问；需要局域网访问时把 `host` 改为 `0.0.0.0`，并自行设置防火墙。
 - `trustedProxies` / `publicHosts`：反向代理地址及公网域名；公网部署必须配置，避免代理内网地址让注册口误开放。不要信任任意来源的转发头。
-- `tlsDir` / `tlsPort`：可选 HTTPS，证书目录内放 `server.key` 和 `server.crt`；也可由反向代理提供 HTTPS。
 - `scanRulesFile`：可选扫描排除规则；参考 `scan-rules.example.json`，留空则不使用规则。
 
 首次启动自动扫描；新增文件后执行 `npm run scan`，扫描不修改原文件。学习数据保存在 `data/`，可用 `COURSE_DATA_DIR` 指定独立目录，不能放进媒体目录。
