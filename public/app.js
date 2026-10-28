@@ -8,6 +8,7 @@ const icons={
   book:'<path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1v14"/>',
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
   star:'<path d="m12 3 2.8 5.7 6.3.9-4.55 4.45 1.07 6.28L12 17.36l-5.62 2.97 1.07-6.28L2.9 9.6l6.3-.9Z"/>',
+  share:'<path d="M12 15V3m-4 4 4-4 4 4M5 11v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9"/>',
   search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   check:'<path d="m5 12 4 4 10-10"/>',
   queue:'<path d="M4 5h16M4 11h10M4 17h7"/><path d="m17 15 5 3-5 3Z" fill="currentColor" stroke="none"/>',
@@ -53,6 +54,33 @@ function toast(s){$('toast').textContent=s;$('toast').classList.remove('hidden')
 function fail(e){toast(e.message||'操作失败')}
 function safe(fn){return(...args)=>{try{return Promise.resolve(fn(...args)).catch(fail)}catch(e){fail(e)}}}
 function openDialog(id){const d=$(id);if(!d.open)d.showModal()}
+let lessonShare=null;
+function lessonShareUrl(d,l){
+  const url=new URL(location.href);
+  url.username='';url.password='';url.search='';
+  url.hash='course/'+d.course.id+'?lesson='+l.id;
+  return url.href;
+}
+function showLessonShare(){
+  if(!current)return;
+  const {data:d,lesson:l}=current;
+  lessonShare={title:l.title,text:d.course.title+' · '+l.title,url:lessonShareUrl(d,l)};
+  $('share-title').textContent=l.title;$('share-course').textContent=d.course.title;
+  $('share-url').value=lessonShare.url;
+  $('share-native').hidden=typeof navigator.share!=='function';
+  openDialog('share-dialog');
+}
+async function copyLessonShare(){
+  if(!lessonShare)return;
+  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(lessonShare.url);toast('链接已复制');return}}catch{}
+  const input=$('share-url');input.focus();input.select();input.setSelectionRange(0,input.value.length);
+  try{if(document.execCommand('copy')){toast('链接已复制');return}}catch{}
+  toast('请长按或选择链接复制');
+}
+async function nativeLessonShare(){
+  if(!lessonShare||typeof navigator.share!=='function')return;
+  try{await navigator.share(lessonShare)}catch(e){if(e.name!=='AbortError')toast('暂时无法打开系统分享，请复制链接')}
+}
 function requireUser(callback){if(user)return false;authCallback=callback;showAuth('login');return true}
 function showAuth(mode){authMode=canRegister?mode:'login';$('auth-title').textContent=authMode==='login'?'欢迎回来':'创建你的账号';$('auth-subtitle').textContent=authMode==='login'?'登录后，继续上次的学习':'每一门课，都有自己的学习记录';$('auth-submit').textContent=authMode==='login'?'登录':'注册并开始';$('auth-switch').textContent=authMode==='login'?'没有账号？注册一个':'已有账号？去登录';$('auth-switch').style.display=canRegister?'':'none';$('password').autocomplete=authMode==='login'?'current-password':'new-password';$('auth-error').textContent='';openDialog('auth-dialog')}
 function updateAccount(){
@@ -299,11 +327,20 @@ function renderLessons(){
 async function route(){
   const version=++navVersion;navActive();
   document.body.classList.remove('transcript-route');
-  const m=/^#course\/([a-f0-9]{24})$/.exec(location.hash);
+  const m=/^#course\/([a-f0-9]{24})(?:\?lesson=([a-f0-9]{24}))?$/.exec(location.hash);
   const t=/^#transcript\/([a-f0-9]{24})$/.exec(location.hash);
   try{
     if(t)await renderTranscriptRoute(t[1],version);
-    else if(m){$('main').innerHTML='<div class="loading">正在打开课程…</div>';await renderDetail(m[1],version)}
+    else if(m){
+      if(m[2])focusLessonId=m[2];
+      $('main').innerHTML='<div class="loading">正在打开课程…</div>';await renderDetail(m[1],version);
+      if(m[2]&&version===navVersion){
+        const lesson=detail.lessons.find(l=>l.id===m[2]);
+        if(!lesson?.mediaId)throw new Error('分享的课时不存在或暂无音频');
+        listRoute=detail.course.shelf==='youth'?'youth':'courses';navActive();
+        await playLesson(detail,lesson.id,false,true,false);
+      }
+    }
     else if(routeName()==='learning')await renderLearning(version);
     else renderCourses();
     if(version===navVersion){window.scrollTo(0,0);if(current&&!t)$('mini-player').classList.remove('hidden')}
@@ -401,10 +438,10 @@ async function startAudio(){
     updatePlayButtons();
   }
 }
-async function playLesson(d,id,fromStart=false,openPlayer=true){
-  if(requireUser(async()=>playLesson(await freshCourse(d),id,fromStart,openPlayer)))return;
+async function playLesson(d,id,fromStart=false,openPlayer=true,autoplay=true){
+  if(requireUser(async()=>playLesson(await freshCourse(d),id,fromStart,openPlayer,autoplay)))return;
   const l=d.lessons.find(x=>x.id===id);if(!l?.mediaId)return;
-  if(current?.lesson.id===id&&!fromStart){if(openPlayer)openDialog('player-dialog');if(audio.paused)await startAudio();return}
+  if(current?.lesson.id===id&&!fromStart){if(openPlayer)openDialog('player-dialog');if(audio.paused&&autoplay)await startAudio();return}
   // Do not await a network save between tracks: iOS may suspend that await in the background.
   enqueueProgress(snapshot());
   const version=++loadVersion;
@@ -414,7 +451,7 @@ async function playLesson(d,id,fromStart=false,openPlayer=true){
   d.state.lastLessonId=id;
   audio.src='/media/'+l.mediaId;
   audio.load();audio.playbackRate=d.state.rate;
-  const playing=startAudio();
+  const playing=autoplay?startAudio():null;
   updatePlayer();renderLessons();void loadTranscript(l);
   if(openPlayer)openDialog('player-dialog');
   await playing;
@@ -750,6 +787,10 @@ $('sleep').onclick=openSleep;
 document.querySelector('#sleep .sleep-icon').innerHTML=icon('clock');
 $('sleep-dialog').addEventListener('close',()=>$('sleep').setAttribute('aria-expanded','false'));
 $('player-pdf').onclick=()=>current&&openDocument(current.data,current.lesson);
+$('player-share').innerHTML=icon('share')+'<span>分享链接</span>';
+$('player-share').onclick=showLessonShare;
+$('share-copy').onclick=safe(copyLessonShare);
+$('share-native').onclick=safe(nativeLessonShare);
 $('player-complete').onclick=safe(()=>current&&toggleComplete(current.data,current.lesson));
 $('player-favorite').addEventListener('click',e=>{const button=e.target.closest('[data-lesson-favorite]');if(button){e.preventDefault();e.stopPropagation();void toggleLessonFavorite(button).catch(fail)}});
 $('open-transcript').onclick=()=>{if(current)location.hash='#transcript/'+current.lesson.id};

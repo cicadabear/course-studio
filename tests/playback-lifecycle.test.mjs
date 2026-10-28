@@ -77,6 +77,15 @@ test('ordinary play tolerates unsupported Audio Session APIs',async()=>{
   delete f.context.navigator.audioSession;await f.run('startAudio()');
 });
 
+test('a shared lesson prepares the player paused, and a later manual play starts the same audio',async()=>{
+  const f=fixture();
+  await f.run("playLesson(data,'two',false,true,false)");
+  assert.equal(f.context.current.lesson.id,'two');assert.equal(f.audio.paused,true);
+  assert.ok(!f.calls.includes('play'));assert.ok(f.calls.includes('open-dialog'));
+  await f.run('startAudio()');
+  assert.equal(f.audio.paused,false);assert.equal(f.calls.filter(c=>c==='play').length,1);
+});
+
 test('safe event wrapper invokes playback in the event call stack and catches both error types',async()=>{
   const source=app.slice(app.indexOf('function safe(fn){'),app.indexOf('function openDialog('));
   const errors=[],context={fail:e=>errors.push(e.message),called:false};vm.createContext(context);vm.runInContext(source,context);
