@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {openStore,PROJECT} from '../store.mjs';
-import {createApp,clientAddress,requestProto,hostIsPublic,sameOrigin,isLocalAddress,LOGIN_FAIL_LIMIT} from '../server.mjs';
+import {createApp,clientAddress,requestProto,hostIsLocal,hostIsPublic,sameOrigin,isLocalAddress,LOGIN_FAIL_LIMIT} from '../server.mjs';
 
 // 伪造 req 只用来验证地址与协议判定，不涉及网络。
 const fake=(socket,headers={})=>({socket,headers});
@@ -29,7 +29,7 @@ test('反代终结 TLS 时按 X-Forwarded-Proto 判断协议',()=>{
   assert.equal(requestProto(fake({encrypted:false},{'x-forwarded-proto':'invalid'})),'http');
 });
 
-test('反代与 Host 兜底：公网入口不能注册，局域网可以',async t=>{
+test('来源与访问地址同时限定为局域网，未配置的公网域名也不能注册',async t=>{
   const sandbox=path.join(PROJECT,'artifacts','gate-'+Date.now());
   await fs.mkdir(sandbox,{recursive:true});
   const db=openStore(path.join(sandbox,'test.sqlite'));
@@ -51,6 +51,17 @@ test('反代与 Host 兜底：公网入口不能注册，局域网可以',async 
   // 路由器端口映射会把来源改写成路由器局域网地址，此时按 Host 兜底：公网域名一律拒绝。
   const publicHost=await postHost({username:'HairpinnedVisitor',password:'visitor-password'},'192.168.1.1','courses.example.test:9003');
   assert.equal(publicHost.status,403);
+  for(const host of ['new-public.example.test:7000','192.168.1.1.evil.example:7000','198.51.100.7:7000']){
+    const blocked=await postHost({username:'BlockedVisitor',password:'visitor-password'},'192.168.1.1',host);
+    assert.equal(blocked.status,403,host);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE username=?').get('BlockedVisitor').n,0);
+    const me=await new Promise((resolve,reject)=>{
+      const req=http.get({host:'127.0.0.1',port:server.address().port,path:'/api/me',headers:{Host:host,'X-Forwarded-For':'192.168.1.1'}},res=>{
+        let text='';res.on('data',c=>text+=c);res.on('end',()=>resolve(JSON.parse(text)));
+      });req.on('error',reject);
+    });
+    assert.equal(me.canRegister,false,host);
+  }
   const noHeader=await post('/api/register',{username:'NoHeaderVisitor',password:'visitor-password'});
   assert.equal(noHeader.status,200);
   const noHeaderPublic=await new Promise((resolve,reject)=>{
@@ -59,7 +70,7 @@ test('反代与 Host 兜底：公网入口不能注册，局域网可以',async 
     });req.on('error',reject);
   });
   assert.equal(noHeaderPublic.canRegister,false);
-  // 走反代但 Host 不是公网域名（局域网设备自己访问反代），仍允许注册。
+  // 来源和访问地址都是局域网 IP 时仍允许注册。
   const lanViaProxy=await postHost({username:'LanViaProxy',password:'visitor-password'},'192.168.1.1','192.168.1.10:9003');
   assert.equal(lanViaProxy.status,200);
   // 局域网设备直连 3000（不经反代）才允许注册。
@@ -115,4 +126,11 @@ test('Host 兜底：拿不到真实 IP 时按 Host 区分公网入口',()=>{
   assert.equal(hostIsPublic('COURSES.Example.Test:9003',hosts),true);
   assert.equal(hostIsPublic('192.168.1.10:9003',hosts),false);
   assert.equal(hostIsPublic('',hosts),false);
+});
+
+test('注册访问地址只允许 localhost 或有效的局域网 IP',()=>{
+  for(const host of ['localhost:7000','127.0.0.1:3000','192.168.1.23:7000','10.1.2.3','172.20.1.2:3001','[::1]:7000','[fd00::1]:7000'])assert.equal(hostIsLocal(host),true,host);
+  for(const host of ['',undefined,'new-public.example.test:7000','localhost.evil.example','192.168.1.23.evil.example','203.0.113.9:7000','192.168.1.23@evil.example','192.168.1.23/path'])assert.equal(hostIsLocal(host),false,String(host));
+  assert.equal(isLocalAddress('192.168.evil.example'),false);
+  assert.equal(isLocalAddress('10.evil.example'),false);
 });

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {isIP} from 'node:net';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -19,6 +20,7 @@ export function normalizeIp(address) {
 }
 export function isLocalAddress(address) {
   const ip=normalizeIp(address);
+  if(!isIP(ip))return false;
   if(ip==='::1'||ip.startsWith('127.'))return true;
   if(ip.startsWith('10.')||ip.startsWith('192.168.')||/^172\.(1[6-9]|2\d|3[01])\./.test(ip)||ip.startsWith('169.254.'))return true;
   return /^f[cd][0-9a-f]{2}:/i.test(ip);
@@ -36,8 +38,15 @@ export function requestProto(req) {
   if(forwarded==='https'||forwarded==='http')return forwarded;
   return req.socket.encrypted?'https':'http';
 }
-// 拿不到访客真实 IP 时（路由器端口映射会把来源改写成路由器局域网地址），退回到 Host：
-// Host 命中 config.publicHosts 就认定是公网入口，不允许注册。
+// 路由器可能把公网访客改写成局域网地址，因此注册还要求 Host 是本机或局域网 IP。
+export function hostIsLocal(host) {
+  if(!host)return false;
+  let parsed;try{parsed=new URL('http://'+String(host).trim())}catch{return false}
+  if(parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)return false;
+  const name=parsed.hostname.toLowerCase().replace(/^\[|\]$/g,'').replace(/\.$/,'');
+  return name==='localhost'||isLocalAddress(name);
+}
+// 保留部署配置中的额外禁用列表。
 export function hostIsPublic(host,publicHosts=[]) {
   const bare=String(host||'').trim().toLowerCase().replace(/:\d+$/,'').replace(/^\[(.*)\]$/,'$1');
   if(!bare)return false;
@@ -107,13 +116,10 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     if(!u&&required)throw error(401,'请先登录');
     return u||null;
   }
-  // 只有这台电脑本身和局域网内的地址可以开新账号；登录不受此限制。走反代时按访客真实地址判断。
-  // 注册只对这台电脑本身和局域网直连开放。
-  // 直连：按 socket 地址判断。走反代：路由器端口映射会把来源改写成路由器局域网地址，
-  // 地址无法区分内外网，退回到 Host —— Host 命中 publicHosts 就认定是公网入口。
+  // 来源 IP 和访问地址都属于本机/局域网才允许注册；公网域名无需逐一配置。
   function fromLocalNetwork(req) {
     const{ip,unknown}=client(req);
-    if(!unknown&&isLocalAddress(ip)&&!hostIsPublic(req.headers.host,publicHosts))return true;
+    if(!unknown&&isLocalAddress(ip)&&hostIsLocal(req.headers.host)&&!hostIsPublic(req.headers.host,publicHosts))return true;
     return false;
   }
   function getCourse(id) {
