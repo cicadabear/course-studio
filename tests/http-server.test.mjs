@@ -14,7 +14,7 @@ test('server has no native certificate loading or secondary HTTPS listener',asyn
 test('HTTPS reverse proxies still receive Secure login cookies over an HTTP upstream',async t=>{
   const temp=await fs.mkdtemp(path.join(PROJECT,'artifacts','proxy-cookie-'));
   const db=openStore(path.join(temp,'test.sqlite'));
-  const server=createApp(db,temp,{trustedProxies:['127.0.0.1']});
+  const server=createApp(db,temp);
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();assert.ok(temp.startsWith(path.join(PROJECT,'artifacts')+path.sep));await fs.rm(temp,{recursive:true,force:true})});
   const salt=crypto.randomBytes(16).toString('hex');

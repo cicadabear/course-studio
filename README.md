@@ -23,7 +23,7 @@ npm start
 - `mediaRoot` / `mediaRoots`：主课程目录和附加目录，可改成绝对路径；`collections` 中的 `root` 要保持一致。
 - `collections`：目录名称与分组；`shelf` 为 `courses` 或 `youth`，分别显示在课程和少年课程中。
 - `host` / `port`：默认仅本机访问；需要局域网访问时把 `host` 改为 `0.0.0.0`，并自行设置防火墙。
-- `trustedProxies` / `publicHosts`：反向代理地址及公网域名；公网部署必须配置，避免代理内网地址让注册口误开放。不要信任任意来源的转发头。
+- `publicHosts`：公网域名列表；这些域名访问时禁止注册。应用直接读取 `X-Forwarded-For`（缺省使用 `X-Real-IP`）和 `X-Forwarded-Proto`，无需代理 IP 白名单；代理应传递访问域名并覆盖访客地址。
 - `scanRulesFile`：可选扫描排除规则；参考 `scan-rules.example.json`，留空则不使用规则。
 
 首次启动自动扫描；新增文件后执行 `npm run scan`，扫描不修改原文件。学习数据保存在 `data/`，可用 `COURSE_DATA_DIR` 指定独立目录，不能放进媒体目录。

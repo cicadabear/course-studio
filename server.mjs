@@ -23,28 +23,19 @@ export function isLocalAddress(address) {
   if(ip.startsWith('10.')||ip.startsWith('192.168.')||/^172\.(1[6-9]|2\d|3[01])\./.test(ip)||ip.startsWith('169.254.'))return true;
   return /^f[cd][0-9a-f]{2}:/i.test(ip);
 }
-// 反代（局域网里的 nginx）会把访客真实地址放进 X-Forwarded-For。
-// 只有直连地址本身是可信反代时才采信这个头，否则任何人都能伪造它。
-// 可信反代但没带头时标记 unknown，按最保守处理：不认为是局域网。
-export function clientAddress(req,trustedProxies=[]) {
-  const trusted=trustedProxies.map(normalizeIp);
+// 按部署约定直接采信反代头，不再要求配置代理 IP 白名单。
+export function clientAddress(req) {
   const direct=normalizeIp(req.socket.remoteAddress);
-  if(!trusted.includes(direct))return{ip:direct,proxied:false,unknown:false};
   const chain=String(req.headers['x-forwarded-for']||'').split(',').map(s=>normalizeIp(s)).filter(Boolean);
-  for(let i=chain.length-1;i>=0;i--)if(!trusted.includes(chain[i]))return{ip:chain[i],proxied:true,unknown:false};
-  return{ip:direct,proxied:true,unknown:true};
+  const forwarded=chain[0]||normalizeIp(req.headers['x-real-ip']);
+  return{ip:forwarded||direct,proxied:Boolean(forwarded),unknown:!forwarded&&!direct};
 }
 // 反代终结 TLS 时，Node 这一侧的 socket 不是加密的，需要靠 X-Forwarded-Proto 判断。
-export function requestProto(req,trustedProxies=[]) {
-  const direct=normalizeIp(req.socket.remoteAddress);
-  if(trustedProxies.map(normalizeIp).includes(direct)) {
-    const forwarded=String(req.headers['x-forwarded-proto']||'').split(',')[0].trim().toLowerCase();
-    if(forwarded==='https'||forwarded==='http')return forwarded;
-  }
+export function requestProto(req) {
+  const forwarded=String(req.headers['x-forwarded-proto']||'').split(',')[0].trim().toLowerCase();
+  if(forwarded==='https'||forwarded==='http')return forwarded;
   return req.socket.encrypted?'https':'http';
 }
-// 拿不到访客真实 IP 时（路由器端口映射会把来源改写成路由器局域网地址），退回到 Host：
-// 公网入口的 Host 由 nginx 固定写死，不采信客户端自报的 Host。
 // 拿不到访客真实 IP 时（路由器端口映射会把来源改写成路由器局域网地址），退回到 Host：
 // Host 命中 config.publicHosts 就认定是公网入口，不允许注册。
 export function hostIsPublic(host,publicHosts=[]) {
@@ -80,9 +71,8 @@ export function sameOrigin(origin,host,proto) {
 export const LOGIN_FAIL_LIMIT=5;
 export const LOGIN_LOCK_MS=12*60*60*1000;
 export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
-  const trustedProxies=Array.isArray(options.trustedProxies)?options.trustedProxies:(Array.isArray(config.trustedProxies)?config.trustedProxies:[]);
   const publicHosts=Array.isArray(options.publicHosts)?options.publicHosts:(Array.isArray(config.publicHosts)?config.publicHosts:[]);
-  const client=req=>clientAddress(req,trustedProxies);
+  const client=req=>clientAddress(req);
   const clientIp=req=>client(req).ip;
   const limits=new Map();
   const limit=(req,kind)=>{
@@ -122,8 +112,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
   // 直连：按 socket 地址判断。走反代：路由器端口映射会把来源改写成路由器局域网地址，
   // 地址无法区分内外网，退回到 Host —— Host 命中 publicHosts 就认定是公网入口。
   function fromLocalNetwork(req) {
-    const{ip,proxied,unknown}=client(req);
-    if(!proxied&&!unknown)return isLocalAddress(ip);
+    const{ip,unknown}=client(req);
     if(!unknown&&isLocalAddress(ip)&&!hostIsPublic(req.headers.host,publicHosts))return true;
     return false;
   }
@@ -164,7 +153,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
       const url=new URL(req.url,'http://localhost'),p=url.pathname,method=req.method;
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method))throw error(405,'不支持该操作');
       if(['POST','PUT','DELETE'].includes(method)){
-        if(!sameOrigin(req.headers.origin,req.headers.host,requestProto(req,trustedProxies)))throw error(403,'请求来源不匹配');
+        if(!sameOrigin(req.headers.origin,req.headers.host,requestProto(req)))throw error(403,'请求来源不匹配');
         if(!String(req.headers['content-type']||'').startsWith('application/json'))throw error(415,'需要 JSON 请求');
       }
       if(p==='/api/health'&&method==='GET')return json(res,200,{ok:true,service:'course-studio',catalogReady:!!db.prepare("SELECT value FROM meta WHERE key='scan'").get()});
@@ -197,7 +186,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
         db.prepare('DELETE FROM sessions WHERE expires_at<?').run(now());
         const token=crypto.randomBytes(32).toString('hex'),ttl=30*24*60*60;
         db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(digest(token),user.id,now()+ttl*1000);
-        return json(res,200,{user},{'Set-Cookie':'sid='+token+'; HttpOnly; SameSite=Lax; Path=/; Max-Age='+ttl+(requestProto(req,trustedProxies)==='https'?'; Secure':'')});
+        return json(res,200,{user},{'Set-Cookie':'sid='+token+'; HttpOnly; SameSite=Lax; Path=/; Max-Age='+ttl+(requestProto(req)==='https'?'; Secure':'')});
       }
       if(p==='/api/logout'&&method==='POST'){
         const token=String(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('sid='))?.slice(4);
