@@ -30,7 +30,7 @@ function cover(c){return '<div class="cover" style="--cover-bg:'+(palette[c.cate
 let user=null,catalog=[],meta=null,detail=null,current=null,queueData=null,navVersion=0;
 let catalogLoadVersion=0;
 let learningTab='lessons',lessonFilter='all',lessonQuery='',visibleLessons=100,queueVisible=100,authMode='login',authCallback=null,listRoute='courses',canRegister=true,tagOrder=[];
-const browseFilters={courses:{searchText:'',category:'全部',sort:'default'},youth:{searchText:'',category:'全部',sort:'default'}};
+const browseFilters={courses:{searchText:'',searchKind:'courses',category:'全部',sort:'default'},youth:{searchText:'',searchKind:'courses',category:'全部',sort:'default'}};
 const browseState=()=>browseFilters[routeName()==='youth'?'youth':'courses'];
 const shelfCourses=()=>catalog.filter(c=>(c.shelf||'courses')===(routeName()==='youth'?'youth':'courses'));
 const routeLabel=()=>routeName()==='youth'?'少年课程':routeName()==='learning'?'我的':'课程列表';
@@ -180,6 +180,7 @@ function bindContinuePanel(){
   $('continue-course')?.addEventListener('click',safe(async e=>{e.stopPropagation();const d=await api('/api/courses/'+e.target.closest('[data-course]').dataset.course);await resumeCourse(d)}));
 }
 function renderCourseResults(){
+  if(browseState().searchKind==='lessons')return;
   const {searchText,category,sort}=browseState(),terms=searchText.toLowerCase().trim().split(/\s+/).filter(Boolean);
   let list=shelfCourses().filter(c=>(category==='全部'||(c.tags||[c.category]).includes(category))&&terms.every(t=>(c.title+' '+c.author+' '+(c.tags||[]).join(' ')).toLowerCase().includes(t)));
   if(sort==='recent')list.sort((a,b)=>(b.lastStudiedAt||b.stateUpdatedAt||0)-(a.lastStudiedAt||a.stateUpdatedAt||0));
@@ -193,15 +194,68 @@ function renderCourses(){
   const ordered=tagOrder.filter(t=>available.has(t));
   const cats=['全部',...ordered,...[...available].filter(t=>!ordered.includes(t)).sort((a,b)=>a.localeCompare(b,'zh-CN'))];
   if(!cats.includes(state.category))state.category='全部';
-  const {searchText,category,sort}=state;
-  $('main').innerHTML='<div class="page-heading"><div><h1>'+routeLabel()+'</h1><p>'+courses.length+' 门课程 · '+courses.reduce((n,c)=>n+(c.audioCount||0),0).toLocaleString()+' 讲音频</p></div>'+searchBox('course-search',searchText,'搜索课程、老师、标签')+'</div>'+
-    (user?continuePanel():'')+'<div class="filters" aria-label="课程标签">'+cats.map(c=>'<button class="filter '+(category===c?'active':'')+'" data-category="'+esc(c)+'" aria-pressed="'+(category===c)+'">'+esc(c)+'</button>').join('')+'</div>'+
-    '<div class="results-bar"><span id="course-count"></span><select id="course-sort" aria-label="课程排序"><option value="default">按老师排序</option><option value="recent">最近学习</option><option value="count">课时最多</option></select></div><div class="course-grid" id="course-grid"></div>';
-  $('course-search').oninput=e=>{state.searchText=e.target.value;renderCourseResults()};
+  const {searchText,category,sort,searchKind='courses'}=state,lessons=searchKind==='lessons';
+  $('main').innerHTML='<div class="page-heading"><div><h1>'+routeLabel()+'</h1><p>'+courses.length+' 门课程 · '+courses.reduce((n,c)=>n+(c.audioCount||0),0).toLocaleString()+' 讲音频</p></div><div class="catalog-search"><div class="search-kind-tabs" role="group" aria-label="搜索类型">'+[['courses','课程'],['lessons','课时']].map(([kind,label])=>'<button data-search-kind="'+kind+'" class="'+(searchKind===kind?'active':'')+'" aria-pressed="'+(searchKind===kind)+'">'+label+'</button>').join('')+'</div>'+searchBox('course-search',searchText,lessons?'搜索课时标题':'搜索课程、老师、标签')+'</div></div>'+
+    (lessons?'<section id="lesson-search-results" class="lesson-search-results" aria-label="课时搜索结果"></section>':
+      (user?continuePanel():'')+'<div class="filters" aria-label="课程标签">'+cats.map(c=>'<button class="filter '+(category===c?'active':'')+'" data-category="'+esc(c)+'" aria-pressed="'+(category===c)+'">'+esc(c)+'</button>').join('')+'</div>'+
+      '<div class="results-bar"><span id="course-count"></span><select id="course-sort" aria-label="课程排序"><option value="default">按老师排序</option><option value="recent">最近学习</option><option value="count">课时最多</option></select></div><div class="course-grid" id="course-grid"></div>');
+  $('course-search').oninput=e=>{state.searchText=e.target.value;if(lessons)scheduleLessonSearch();else renderCourseResults()};
+  document.querySelectorAll('[data-search-kind]').forEach(button=>button.onclick=()=>{if(state.searchKind===button.dataset.searchKind)return;state.searchKind=button.dataset.searchKind;renderCourses();$('course-search').focus()});
+  if(lessons){
+    $('lesson-search-results').addEventListener('click',safe(async e=>{
+      const button=e.target.closest('[data-search-play]');if(!button)return;
+      const d=await api('/api/courses/'+button.dataset.course),l=d.lessons.find(l=>l.id===button.dataset.searchPlay);
+      if(!l)throw new Error('这节课时已不可用');
+      if(l.mediaId)await playLesson(d,l.id);else openDocument(d,l);
+    }));
+    scheduleLessonSearch();return;
+  }
   $('course-sort').value=sort;$('course-sort').onchange=e=>{state.sort=e.target.value;renderCourseResults()};
   document.querySelectorAll('[data-category]').forEach(b=>b.onclick=()=>{state.category=b.dataset.category;document.querySelectorAll('[data-category]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b))});renderCourseResults()});
   bindContinuePanel();
   renderCourseResults();
+}
+let lessonSearchTimer=null,lessonSearchVersion=0,lessonSearchView=null;
+function highlightLessonTitle(title,query){
+  const terms=[...new Set(query.trim().split(/\s+/).filter(Boolean))].sort((a,b)=>b.length-a.length);
+  if(!terms.length)return esc(title);
+  const pattern=new RegExp(terms.map(term=>term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|'),'gi');
+  const text=String(title);let result='',at=0;
+  for(const match of text.matchAll(pattern)){result+=esc(text.slice(at,match.index))+'<mark>'+esc(match[0])+'</mark>';at=match.index+match[0].length}
+  return result+esc(text.slice(at));
+}
+function lessonSearchRow(l,query){
+  const state=l.completed?'已完成':l.position>0?'已听 '+fmt(l.position):l.mediaId?'未播放':'文稿课时';
+  const action=l.mediaId?'播放课时':'阅读文稿';
+  return '<article class="lesson-search-row"><span class="lesson-search-symbol">'+icon(l.mediaId?'audio':'pdf')+'</span><div class="lesson-search-copy"><button class="lesson-search-title" data-search-play="'+l.id+'" data-course="'+l.courseId+'">'+highlightLessonTitle(l.title,query)+'</button><p class="lesson-search-course"><a href="#course/'+l.courseId+'" data-focus-lesson="'+l.id+'">'+esc(l.courseTitle)+'</a><span>'+esc(l.author)+'</span></p><p class="lesson-search-meta">'+(l.duration?'<span>'+fmt(l.duration)+'</span>':'')+'<span'+(l.completed?' class="orange"':'')+'>'+state+'</span>'+(l.documentId&&l.mediaId?'<span>含文稿</span>':'')+'</p></div>'+lessonFavoriteButton(l)+'<button class="lesson-search-play" data-search-play="'+l.id+'" data-course="'+l.courseId+'" aria-label="'+action+'：'+esc(l.title)+'">'+icon(l.mediaId?'play':'pdf')+'</button></article>';
+}
+function currentLessonSearch(view){return view===lessonSearchView&&view.version===lessonSearchVersion&&view.navVersion===navVersion&&view.userId===user?.id&&routeName()===view.shelf&&browseState().searchKind==='lessons'}
+function scheduleLessonSearch(){
+  clearTimeout(lessonSearchTimer);
+  const view=lessonSearchView={version:++lessonSearchVersion,navVersion,userId:user?.id,shelf:routeName(),query:browseState().searchText.trim(),offset:0,loading:false};
+  const host=$('lesson-search-results');if(!host)return;
+  if(!view.query){host.setAttribute('aria-busy','false');host.innerHTML='<div class="lesson-search-empty"><span class="lesson-search-empty-icon">'+icon('search')+'</span><p class="eyebrow">找到想听的那一讲</p><h2>按课时标题搜索</h2><p>输入关键词，直接查找'+(view.shelf==='youth'?'少年课程':'当前课程库')+'中的课时。</p><small>支持多个关键词，用空格分隔</small></div>';return}
+  host.setAttribute('aria-busy','true');
+  host.innerHTML='<div class="lesson-search-summary"><div><p class="eyebrow">课时标题搜索</p><h2 role="status">正在查找…</h2></div></div><div class="lesson-search-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>';
+  lessonSearchTimer=setTimeout(()=>void loadLessonSearch(view),250);
+}
+async function loadLessonSearch(view,append=false){
+  if(view.loading||!currentLessonSearch(view))return;view.loading=true;
+  const more=$('lesson-search-more');if(more)more.disabled=true;
+  try{
+    const data=await api('/api/lessons/search?'+new URLSearchParams({q:view.query,shelf:view.shelf,offset:view.offset,limit:30}));
+    if(!currentLessonSearch(view))return;
+    const host=$('lesson-search-results'),rows=data.lessons.map(l=>lessonSearchRow(l,view.query)).join('');
+    if(append)$('lesson-search-list').insertAdjacentHTML('beforeend',rows);
+    else host.innerHTML='<div class="lesson-search-summary"><div><p class="eyebrow">课时标题搜索</p><h2 role="status" aria-live="polite">找到 <strong>'+data.total.toLocaleString()+'</strong> 个课时</h2></div><span class="lesson-search-scope">'+(view.shelf==='youth'?'少年课程':'课程列表')+'</span></div>'+(data.total?'<div id="lesson-search-list" class="lesson-search-list">'+rows+'</div><button id="lesson-search-more" class="show-more">显示更多课时</button>':empty('没有找到相关课时','换个标题关键词试试，或切换回课程搜索'));
+    view.offset=data.nextOffset;host.setAttribute('aria-busy','false');
+    const button=$('lesson-search-more');if(button){button.classList.toggle('hidden',!data.hasMore);button.disabled=false;button.onclick=()=>void loadLessonSearch(view,true)}
+  }catch(e){
+    if(!currentLessonSearch(view))return;
+    $('lesson-search-results').setAttribute('aria-busy','false');
+    if(append){if(more)more.disabled=false;fail(e)}
+    else{$('lesson-search-results').innerHTML=empty('暂时无法搜索',esc(e.message),'<button id="lesson-search-retry" class="secondary">重新搜索</button>');$('lesson-search-retry').onclick=()=>void loadLessonSearch(view)}
+  }finally{view.loading=false}
 }
 async function renderLearning(version){
   detail=null;

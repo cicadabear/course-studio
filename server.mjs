@@ -224,6 +224,32 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
         if(shelf)Object.assign(summary,{courses:catalog.length,lessons:catalog.reduce((n,c)=>n+c.lessonCount,0),audio:catalog.reduce((n,c)=>n+(c.audioCount||0),0),documents:catalog.reduce((n,c)=>n+c.documentCount,0)});
         return json(res,200,{courses:catalog,tagOrder:shelf?tagOrders[shelf]:tagOrder,meta:summary});
       }
+      if(p==='/api/lessons/search'&&method==='GET'){
+        const u=auth(req),query=(url.searchParams.get('q')||'').trim(),shelf=url.searchParams.get('shelf')||'courses';
+        const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||30);
+        if(!['courses','youth'].includes(shelf))throw error(400,'无效的课程分类');
+        if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>50)throw error(400,'分页参数无效');
+        const terms=query.split(/\s+/).filter(Boolean);
+        if(query.length>100||terms.length>8)throw error(400,'搜索词过长，请缩短后重试');
+        if(!terms.length)return json(res,200,{lessons:[],total:0,hasMore:false,nextOffset:0});
+        const courses=db.prepare('SELECT id,title,author,category,source_root FROM courses WHERE active=1').all();
+        const ids=courses.filter(c=>courseMetadata(c,config).shelf===shelf).map(c=>c.id);
+        if(!ids.length)return json(res,200,{lessons:[],total:0,hasMore:false,nextOffset:0});
+        const literal=value=>value.replace(/[\\%_]/g,'\\$&');
+        const where=`l.active=1 AND c.active=1 AND c.id IN (${ids.map(()=>'?').join(',')}) AND `+terms.map(()=>"l.title LIKE ? ESCAPE '\\'").join(' AND ');
+        const params=[...ids,...terms.map(term=>'%'+literal(term)+'%')];
+        const total=db.prepare('SELECT COUNT(*) n FROM lessons l JOIN courses c ON c.id=l.course_id WHERE '+where).get(...params).n;
+        const rows=db.prepare(`SELECT l.id,l.title,l.kind,l.section,l.course_id AS courseId,c.title AS courseTitle,c.author,
+          l.primary_file AS mediaId,l.document_file AS documentId,COALESCE(p.position,0) AS position,
+          COALESCE(NULLIF(p.duration,0),l.duration) AS duration,COALESCE(p.completed,0) AS completed,f.created_at AS favoritedAt
+          FROM lessons l JOIN courses c ON c.id=l.course_id
+          LEFT JOIN progress p ON p.lesson_id=l.id AND p.user_id=?
+          LEFT JOIN lesson_favorites f ON f.lesson_id=l.id AND f.user_id=? WHERE ${where}
+          ORDER BY CASE WHEN lower(l.title)=lower(?) THEN 0 WHEN l.title LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
+          c.title COLLATE NOCASE,c.id,l.sort_order,l.id LIMIT ? OFFSET ?`).all(u.id,u.id,...params,query,literal(query)+'%',limit,offset);
+        const lessons=rows.map(l=>({...l,isFavorite:l.favoritedAt!=null})),nextOffset=offset+lessons.length;
+        return json(res,200,{lessons,total,hasMore:nextOffset<total,nextOffset});
+      }
       const courseRoute=/^\/api\/courses\/([a-f0-9]{24})$/.exec(p);
       if(courseRoute&&method==='GET'){
         const u=auth(req),id=courseRoute[1],course=getCourse(id);
