@@ -784,7 +784,18 @@ async function toggleQueue(d,id){
 }
 function openQueue(d){
   if(!d){toast('先打开一门课程');return}
-  queueData=d;queueVisible=100;renderQueue();openDialog('queue-dialog');
+  const available=new Set(d.lessons.map(l=>l.id));
+  const index=current?.data.course.id===d.course.id?d.state.queue.filter(id=>available.has(id)).indexOf(current.lesson.id):-1;
+  // Include the next page too, so a playing row near a page boundary can be centered.
+  queueData=d;queueVisible=index<0?100:Math.max(100,(Math.ceil((index+1)/100)+1)*100);
+  renderQueue();openDialog('queue-dialog');
+  const dialog=$('queue-dialog'),scroller=$('queue-items');scroller.scrollTop=0;
+  requestAnimationFrame(()=>{
+    if(!dialog.open||queueData!==d)return;
+    const row=dialog.querySelector('.queue-row.current');if(!row)return;
+    const item=row.getBoundingClientRect(),panel=scroller.getBoundingClientRect();
+    scroller.scrollTop+=item.top+item.height/2-(panel.top+scroller.clientTop+scroller.clientHeight/2);
+  });
 }
 function renderQueue(){
   if(!queueData)return;
