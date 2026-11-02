@@ -55,6 +55,7 @@ function fail(e){toast(e.message||'操作失败')}
 function safe(fn){return(...args)=>{try{return Promise.resolve(fn(...args)).catch(fail)}catch(e){fail(e)}}}
 function openDialog(id){const d=$(id);if(!d.open)d.showModal()}
 let lessonShare=null;
+let shareTarget=null,shareViewVersion=0,shareListVersion=0;
 function lessonShareUrl(d,l){
   const url=new URL(location.href);
   url.username='';url.password='';url.search='';
@@ -62,13 +63,47 @@ function lessonShareUrl(d,l){
   return url.href;
 }
 function showLessonShare(){
-  if(!current)return;
+  if(!current||user?.username?.toLowerCase()!=='jack')return;
   const {data:d,lesson:l}=current;
-  lessonShare={title:l.title,text:d.course.title+' · '+l.title,url:lessonShareUrl(d,l)};
+  shareTarget={lessonId:l.id,title:l.title,courseTitle:d.course.title,loginUrl:lessonShareUrl(d,l)};
   $('share-title').textContent=l.title;$('share-course').textContent=d.course.title;
-  $('share-url').value=lessonShare.url;
+  $('share-mode').value='guest';$('share-hours').value='48';$('share-opens').value='10';
+  updateLessonShareMode();
   $('share-native').hidden=typeof navigator.share!=='function';
   openDialog('share-dialog');
+  void loadShareList().catch(fail);
+}
+function updateLessonShareMode(){
+  ++shareViewVersion;
+  const guest=$('share-mode').value==='guest';
+  lessonShare=!guest&&shareTarget?{title:shareTarget.title,text:shareTarget.courseTitle+' · '+shareTarget.title,url:shareTarget.loginUrl}:null;
+  $('share-guest-options').hidden=!guest;$('share-generate').hidden=!guest;$('share-generate').disabled=false;
+  $('share-url').value=lessonShare?.url||'';$('share-url').placeholder='生成后显示链接';
+  $('share-copy').disabled=$('share-native').disabled=!lessonShare;
+  $('share-hint').textContent=guest?'无需登录，仅可播放这一讲和阅读配套文稿。同一浏览器刷新不重复计次；有效期从生成时开始。':'对方登录后即可打开这一讲，学习进度各自保存。';
+}
+async function generateLessonShare(){
+  if(!shareTarget||$('share-mode').value!=='guest')return;
+  const target=shareTarget,version=++shareViewVersion;
+  $('share-generate').disabled=true;$('share-hint').textContent='正在生成分享链接…';
+  try{
+    const result=await api('/api/shares','POST',{lessonId:target.lessonId,hours:Number($('share-hours').value),maxOpens:Number($('share-opens').value)});
+    if(version!==shareViewVersion||target!==shareTarget)return;
+    lessonShare={title:target.title,text:target.courseTitle+' · '+target.title,url:new URL(result.path,location.origin).href};
+    $('share-url').value=lessonShare.url;$('share-copy').disabled=$('share-native').disabled=false;
+    $('share-hint').textContent='无需登录 · '+new Date(result.expiresAt).toLocaleString('zh-CN',{hour12:false})+' 到期 · 最多打开 '+result.maxOpens+' 次。同一浏览器刷新不重复计次。';
+    await loadShareList();
+  }catch(e){if(version===shareViewVersion){$('share-hint').textContent=e.message;throw e}}
+  finally{if(version===shareViewVersion)$('share-generate').disabled=false}
+}
+async function loadShareList(){
+  const target=shareTarget,version=++shareListVersion;if(!target)return;
+  const {shares}=await api('/api/shares?lessonId='+target.lessonId);
+  if(target!==shareTarget||version!==shareListVersion)return;
+  $('share-list').innerHTML=shares.length?shares.map(s=>{
+    const state=s.revoked?'已停用':s.expiresAt<=Date.now()?'已到期':s.openCount>=s.maxOpens?'次数已用完':'剩余 '+(s.maxOpens-s.openCount)+' 次';
+    return '<div class="share-record"><div><strong>'+state+'</strong><small>'+esc(new Date(s.createdAt).toLocaleString('zh-CN',{hour12:false}))+' 创建<br>'+esc(new Date(s.expiresAt).toLocaleString('zh-CN',{hour12:false}))+' 到期</small></div>'+(!s.revoked&&s.expiresAt>Date.now()?'<button class="text-button" data-revoke-share="'+s.id+'">停用</button>':'')+'</div>';
+  }).join(''):'<p class="muted">还没有免登录链接</p>';
 }
 async function copyLessonShare(){
   if(!lessonShare)return;
@@ -86,6 +121,8 @@ function showAuth(mode){authMode=canRegister?mode:'login';$('auth-title').textCo
 function updateAccount(){
   $('account').innerHTML=user?'<span class="avatar">'+esc(user.username[0].toUpperCase())+'</span>'+esc(user.username):authLabel();
   $('account-name').textContent=user?.username||'';
+  $('player-share').hidden=user?.username?.toLowerCase()!=='jack';
+  if($('player-share').hidden){$('share-dialog').close();lessonShare=null;shareTarget=null;++shareViewVersion;++shareListVersion}
 }
 async function loadCatalog(){
   const version=++catalogLoadVersion,shelf=routeName();
@@ -856,6 +893,15 @@ $('player-share').innerHTML=icon('share')+'<span>分享链接</span>';
 $('player-share').onclick=showLessonShare;
 $('share-copy').onclick=safe(copyLessonShare);
 $('share-native').onclick=safe(nativeLessonShare);
+$('share-mode').onchange=updateLessonShareMode;
+$('share-hours').onchange=$('share-opens').onchange=updateLessonShareMode;
+$('share-generate').onclick=safe(generateLessonShare);
+$('share-list').onclick=safe(async e=>{
+  const button=e.target.closest('[data-revoke-share]');if(!button)return;
+  button.disabled=true;
+  try{await api('/api/shares/'+button.dataset.revokeShare,'DELETE',{});await loadShareList();toast('分享链接已停用')}
+  finally{button.disabled=false}
+});
 $('player-complete').onclick=safe(()=>current&&toggleComplete(current.data,current.lesson));
 $('player-favorite').addEventListener('click',e=>{const button=e.target.closest('[data-lesson-favorite]');if(button){e.preventDefault();e.stopPropagation();void toggleLessonFavorite(button).catch(fail)}});
 $('open-transcript').onclick=()=>{if(current)location.hash='#transcript/'+current.lesson.id};

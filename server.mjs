@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {openStore,PROJECT,config,transaction} from './store.mjs';
 import {scan} from './scanner.mjs';
 import {courseMetadata,tagOrder,tagOrders} from './catalog-tags.mjs';
+import {publicShareRoutes} from './public-shares.mjs';
 const scrypt=promisify(crypto.scrypt);
 const digest=s=>crypto.createHash('sha256').update(s).digest('hex');
 const now=()=>Date.now();
@@ -131,7 +132,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     const l=db.prepare('SELECT * FROM lessons WHERE id=? AND active=1').get(id);
     if(!l)throw error(404,'课时不存在');return l;
   }
-  async function stream(req,res,file) {
+  async function stream(req,res,file,grant=null) {
     const roots=options.mediaRoots||[mediaRoot,...(config.mediaRoots||[])];
     const root=path.resolve(file.source_root||mediaRoot);
     if(!roots.some(r=>path.resolve(r).toLowerCase()===root.toLowerCase()))throw error(403,'媒体来源不可访问');
@@ -139,9 +140,10 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     const base=await fsp.realpath(root),real=await fsp.realpath(resolved).catch(()=>{throw error(404,'原文件暂时不可用')});
     if(!real.toLowerCase().startsWith(base.toLowerCase()+path.sep))throw error(403,'媒体路径不可访问');
     const stat=await fsp.stat(real);if(!stat.isFile())throw error(404,'原文件暂时不可用');
+    if(grant)grant.authorize();
     let range;try{range=parseRange(req.headers.range,stat.size)}catch(e){res.setHeader('Content-Range','bytes */'+stat.size);throw e}
     const types={'.mp3':'audio/mpeg','.m4a':'audio/mp4','.wav':'audio/wav','.ogg':'audio/ogg','.flac':'audio/flac','.pdf':'application/pdf'};
-    const headers={'Content-Type':types[file.ext]||'application/octet-stream','Accept-Ranges':'bytes','Cache-Control':'private, max-age=0','Content-Length':range?range.end-range.start+1:stat.size};
+    const headers={'Content-Type':types[file.ext]||'application/octet-stream','Accept-Ranges':'bytes','Cache-Control':grant?'private, no-store':'private, max-age=0','Content-Length':range?range.end-range.start+1:stat.size};
     if(file.ext==='.pdf')headers['Content-Disposition']="inline; filename*=UTF-8''"+encodeURIComponent(path.basename(real)).replace(/'/g,'%27');
     if(range)headers['Content-Range']='bytes '+range.start+'-'+range.end+'/'+stat.size;
     res.writeHead(range?206:200,headers);
@@ -149,8 +151,15 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     const source=fs.createReadStream(real,range||{});
     source.on('error',()=>res.destroy());
     res.on('close',()=>source.destroy());
+    if(grant){
+      // Stop long responses at expiry; check revocation during an active stream too.
+      const expiry=setTimeout(()=>res.destroy(),Math.max(1,grant.expiresAt-Date.now()));expiry.unref();
+      const check=setInterval(()=>{try{grant.authorize()}catch{res.destroy()}},5000);check.unref();
+      res.on('close',()=>{clearTimeout(expiry);clearInterval(check)});
+    }
     source.pipe(res);
   }
+  const shares=publicShareRoutes(db,{auth,body,json,stream,requestProto,clock:options.clock});
   const handler=async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Referrer-Policy','same-origin');
@@ -164,6 +173,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
       }
       if(p==='/api/health'&&method==='GET')return json(res,200,{ok:true,service:'course-studio',catalogReady:!!db.prepare("SELECT value FROM meta WHERE key='scan'").get()});
       if(p==='/api/me'&&method==='GET')return json(res,200,{user:auth(req,false),canRegister:fromLocalNetwork(req)});
+      if(await shares(req,res,p,method,url))return;
       if((p==='/api/register'||p==='/api/login')&&method==='POST'){
         const register=p.endsWith('register'),ip=clientIp(req);
         // 登录不再单独限流，改由连错 5 次锁 12 小时兜底；注册仍保留每分钟额度。
@@ -367,11 +377,12 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
         if(!file)throw error(404,'文件不存在');
         return await stream(req,res,file);
       }
-      const staticFiles={'/':'index.html','/app.js':'app.js','/styles.css':'styles.css','/icon.svg':'icon.svg','/media-artwork.png':'media-artwork.png','/apple-touch-icon.png':'apple-touch-icon.png'};
+      const staticFiles={'/':'index.html','/share':'share.html','/share.js':'share.js','/app.js':'app.js','/styles.css':'styles.css','/icon.svg':'icon.svg','/media-artwork.png':'media-artwork.png','/apple-touch-icon.png':'apple-touch-icon.png'};
       if(staticFiles[p]&&['GET','HEAD'].includes(method)){
         const name=staticFiles[p],data=await fsp.readFile(path.join(PROJECT,'public',name));
         const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png'};
         res.setHeader('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'");
+        if(p==='/share'){res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive')}
         res.writeHead(200,{'Content-Type':types[path.extname(name)],'Cache-Control':'no-cache','Content-Length':data.length});return res.end(method==='HEAD'?undefined:data);
       }
       throw error(404,'没有找到这个页面');

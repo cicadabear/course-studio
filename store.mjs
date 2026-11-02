@@ -35,6 +35,10 @@ export function openStore(filename=path.join(DATA,'courses.sqlite')) {
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS transcripts (lesson_id TEXT PRIMARY KEY REFERENCES lessons(id),lines TEXT NOT NULL,chars INTEGER NOT NULL DEFAULT 0,source TEXT,created_at INTEGER,paragraphs TEXT,timed TEXT,ads TEXT,updated_at INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS auth_locks (ip TEXT PRIMARY KEY,failures INTEGER NOT NULL DEFAULT 0,locked_until INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS public_shares (id TEXT PRIMARY KEY,token_hash TEXT NOT NULL,owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id TEXT NOT NULL REFERENCES lessons(id),audio_file TEXT,document_file TEXT,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,max_opens INTEGER NOT NULL,open_count INTEGER NOT NULL DEFAULT 0,revoked_at INTEGER);
+    CREATE INDEX IF NOT EXISTS public_shares_owner ON public_shares(owner_id,lesson_id,created_at DESC);
+    CREATE TABLE IF NOT EXISTS share_sessions (token_hash TEXT PRIMARY KEY,share_id TEXT NOT NULL REFERENCES public_shares(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS share_sessions_expiry ON share_sessions(expires_at);
   `);
   const columns=new Set(db.prepare('PRAGMA table_info(courses)').all().map(c=>c.name));
   if(!columns.has('price_yuan'))db.exec('ALTER TABLE courses ADD COLUMN price_yuan REAL');
