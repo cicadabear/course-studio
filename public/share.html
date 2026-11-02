@@ -3,15 +3,21 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow,noarchive"><meta name="theme-color" content="#ff6b00">
-<title>课时分享 · 知行</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css?build=20261102-public-share">
+<title>课时分享 · 知行</title><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><link rel="stylesheet" href="/styles.css?build=20261102-share-player">
 </head>
 <body class="guest-share-page">
-<header class="guest-brand"><img src="/icon.svg" alt=""><span>知行<small>课时分享</small></span></header>
-<main class="guest-main"><section class="guest-card">
-<p class="eyebrow">与你分享一堂好课</p><h1 id="guest-title">打开分享的课时</h1><p id="guest-course" class="muted"></p>
-<div id="guest-entry"><p>无需登录，即可收听这一讲、阅读配套文稿。</p><button id="guest-open" class="primary wide">打开课时</button><small>点击后计为一次打开。同一浏览器刷新不重复计次。</small></div>
-<div id="guest-content" hidden><audio id="guest-audio" controls preload="none" playsinline></audio><a id="guest-document" class="secondary wide" target="_blank" rel="noopener noreferrer" hidden>阅读配套文稿</a><p id="guest-expiry" class="muted"></p><p class="guest-note">分享仅包含这一讲，不会保存到分享者的学习记录。</p></div>
-<p id="guest-status" role="status" aria-live="polite"></p>
-</section><p class="guest-footer">随时学习，有所收获。</p></main>
-<script src="/share.js?build=20261102-public-share" type="module"></script>
+<main class="guest-stage"><section class="player-dialog guest-player" aria-labelledby="guest-title">
+<p class="eyebrow">正在播放</p><div id="guest-cover" class="player-cover"></div><p id="guest-course" class="muted"></p><h2 id="guest-title" tabindex="-1">课时分享</h2>
+<div id="guest-entry"><button id="guest-open" class="primary wide">打开课时</button></div>
+<div id="guest-content" hidden>
+<div id="guest-audio-controls">
+<div class="seek"><input id="guest-seek" type="range" min="0" max="1000" value="0" aria-label="播放进度" disabled><div class="times"><span id="guest-current">00:00</span><span id="guest-total">00:00</span></div></div>
+<div class="transport"><button id="guest-backward" class="skip" aria-label="后退 15 秒" disabled></button><button id="guest-play" class="big-play" aria-label="播放"></button><button id="guest-forward" class="skip" aria-label="前进 15 秒" disabled></button></div>
+</div>
+<div class="player-options"><label id="guest-rate-label">倍速<select id="guest-rate" aria-label="播放倍速"><option value="0.75">0.75×</option><option value="1" selected>1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2.0×</option></select></label><a id="guest-document" class="text-button" target="_blank" rel="noopener noreferrer" hidden>阅读文稿</a></div>
+</div>
+<p id="guest-status" class="save-status failed" role="status" aria-live="polite"></p>
+</section></main>
+<audio id="guest-audio" preload="metadata" playsinline webkit-playsinline></audio>
+<script src="/share.js?build=20261102-share-player" type="module"></script>
 </body></html>

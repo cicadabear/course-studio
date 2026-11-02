@@ -16,7 +16,7 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
     return user;
   }
   function active(id){
-    const row=db.prepare(`SELECT s.*,l.title,l.primary_file,l.document_file AS current_document,l.duration,l.active AS lesson_active,c.title AS course_title,c.author,c.active AS course_active
+    const row=db.prepare(`SELECT s.*,l.title,l.primary_file,l.document_file AS current_document,l.duration,l.active AS lesson_active,c.title AS course_title,c.author,c.category,c.active AS course_active
       FROM public_shares s JOIN lessons l ON l.id=s.lesson_id JOIN courses c ON c.id=l.course_id WHERE s.id=?`).get(id);
     if(!row)throw error(404,'分享链接不存在');
     if(row.revoked_at!=null||row.expires_at<=clock())throw error(410,'分享链接已过期或已停用');
@@ -33,7 +33,7 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
     return share;
   }
   const summary=s=>({id:s.id,createdAt:s.created_at,expiresAt:s.expires_at,maxOpens:s.max_opens,openCount:s.open_count,revoked:s.revoked_at!=null});
-  const payload=s=>({title:s.title,courseTitle:s.course_title,author:s.author,duration:s.duration,expiresAt:s.expires_at,
+  const payload=s=>({title:s.title,courseTitle:s.course_title,author:s.author,category:s.category,duration:s.duration,expiresAt:s.expires_at,
     audioUrl:s.audio_file&&s.audio_file===s.primary_file?'/api/public-shares/'+s.id+'/media/'+s.audio_file:null,
     documentUrl:s.document_file&&s.document_file===s.current_document?'/api/public-shares/'+s.id+'/media/'+s.document_file:null});
   return async(req,res,p,method,url)=>{
