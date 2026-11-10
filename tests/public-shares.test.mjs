@@ -25,7 +25,7 @@ test('anonymous lesson shares enforce scoped sessions, quotas, expiry and owner 
   t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));db.close();assert.ok(temp.startsWith(path.join(PROJECT,'artifacts')+path.sep));await fs.rm(temp,{recursive:true,force:true})});
   const request=async(url,{method='GET',data,cookie,headers={}}={})=>{
     const res=await fetch(origin+url,{method,headers:{...(data?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},body:data?JSON.stringify(data):undefined});
-    return {status:res.status,headers:res.headers,data:res.headers.get('content-type')?.includes('json')?await res.json():Buffer.from(await res.arrayBuffer())};
+    return {status:res.status,headers:res.headers,data:method!=='HEAD'&&res.headers.get('content-type')?.includes('json')?await res.json():Buffer.from(await res.arrayBuffer())};
   };
   const create=async(data={})=>{const result=await request('/api/shares',{method:'POST',cookie:owners[0].cookie,data:{lessonId:lesson.id,...data}});assert.equal(result.status,201);return{...result.data,token:result.data.path.split('.')[1],base:'/api/public-shares/'+result.data.id+'/'}};
   const open=(share,cookie,headers)=>request(share.base+'open',{method:'POST',data:{token:share.token},cookie,headers});
@@ -74,6 +74,54 @@ test('anonymous lesson shares enforce scoped sessions, quotas, expiry and owner 
     const cookie=results.find(r=>r.status===200).headers.get('set-cookie').split(';')[0];
     assert.equal((await open(limited,cookie)).status,200);assert.equal((await request(limited.base+'lesson',{cookie})).status,200);assert.equal(count(limited),10);
   });
+  await t.test('PDF links return the PDF directly without login, JavaScript or a player session',async()=>{
+    const pdf=await create();assert.equal(pdf.documentPath,pdf.base+'document.pdf?token='+pdf.token);
+    const result=await request(pdf.documentPath);assert.equal(result.status,200);assert.equal(result.headers.get('content-type'),'application/pdf');assert.ok(result.data.toString().startsWith('%PDF'));
+    assert.match(result.headers.get('content-disposition'),/^inline;/);assert.equal(result.headers.get('cache-control'),'private, no-store');assert.equal(result.headers.get('referrer-policy'),'no-referrer');
+    const setCookie=result.headers.get('set-cookie'),cookie=setCookie.split(';')[0];
+    assert.match(setCookie,/^share_pdf_sid=/);assert.match(setCookie,/HttpOnly; SameSite=Lax/);assert.ok(setCookie.includes('Path='+pdf.base+'document.pdf;'));
+    assert.ok(!JSON.stringify(db.prepare('SELECT * FROM share_document_sessions').all()).includes(cookie.split('=')[1]));
+    assert.equal(count(pdf),1);
+    assert.equal((await request(pdf.base+'lesson',{cookie})).status,401);assert.equal((await request(pdf.base+'media/'+lesson.primary_file,{cookie})).status,401);
+    for(const range of ['bytes=0-3','bytes=-4'])assert.equal((await request(pdf.documentPath,{cookie,headers:{Range:range}})).status,206);
+    assert.equal((await request(pdf.documentPath,{cookie})).status,200);assert.equal(count(pdf),1);
+    // Without a cookie each independent GET is a new reader.
+    assert.equal((await request(pdf.documentPath)).status,200);assert.equal(count(pdf),2);
+    const played=await open(pdf,cookie);assert.equal(played.status,200);assert.equal(count(pdf),3);
+    const fresh=await create(),freshOpened=await open(fresh),playerCookie=freshOpened.headers.get('set-cookie').split(';')[0];
+    assert.equal((await request(fresh.documentPath,{cookie:playerCookie})).status,200);assert.equal(count(fresh),2);
+    const secure=await request((await create()).documentPath,{headers:{'X-Forwarded-Proto':'https'}});assert.match(secure.headers.get('set-cookie'),/; Secure$/);
+    assert.equal((await create({lessonId:other.id})).documentPath,null);
+  });
+  await t.test('PDF HEAD, bad links, missing documents and invalid ranges do not spend an opening',async()=>{
+    const pdf=await create();
+    const head=await request(pdf.documentPath,{method:'HEAD'});assert.equal(head.status,200);assert.equal(head.headers.get('set-cookie'),null);assert.equal(head.data.length,0);assert.equal(count(pdf),0);
+    for(const url of [pdf.base+'document.pdf',pdf.documentPath.replace(pdf.token,'0'.repeat(64)),pdf.documentPath.replace(pdf.token,'invalid')])assert.equal((await request(url)).status,404);
+    assert.equal((await request(pdf.documentPath,{headers:{Range:'bytes=99999-'}})).status,416);assert.equal(count(pdf),0);
+    const noPdf=await create({lessonId:other.id});assert.equal((await request(noPdf.base+'document.pdf?token='+noPdf.token)).status,404);assert.equal(count(noPdf),0);
+    const file=db.prepare('SELECT relative_path FROM files WHERE id=?').get(lesson.document_file),original=path.join(source,file.relative_path),moved=original+'.test-missing';
+    await fs.rename(original,moved);
+    try{assert.equal((await request(pdf.documentPath)).status,404);assert.equal(count(pdf),0)}finally{await fs.rename(moved,original)}
+  });
+  await t.test('PDF and playback share one atomic quota while admitted PDF ranges remain available',async()=>{
+    const pdf=await create({maxOpens:2}),results=await Promise.all(Array.from({length:8},()=>request(pdf.documentPath)));
+    assert.equal(results.filter(r=>r.status===200).length,2);assert.equal(results.filter(r=>r.status===410).length,6);assert.equal(count(pdf),2);
+    const cookie=results.find(r=>r.status===200).headers.get('set-cookie').split(';')[0];
+    assert.equal((await request(pdf.documentPath,{cookie,headers:{Range:'bytes=0-3'}})).status,206);assert.equal((await request(pdf.documentPath,{method:'HEAD',cookie})).status,200);
+    assert.equal((await request(pdf.documentPath,{method:'HEAD'})).status,410);assert.equal((await open(pdf,cookie)).status,410);
+    const mixed=await create({maxOpens:1}),both=await Promise.all([open(mixed),request(mixed.documentPath)]);
+    assert.deepEqual(both.map(r=>r.status).sort(),[200,410]);assert.equal(count(mixed),1);
+    const second=await create();assert.equal((await request(second.documentPath,{cookie})).status,200);assert.equal(count(second),1);assert.equal(count(pdf),2);
+  });
+  await t.test('PDF sessions persist across restart and stop on revocation or file replacement',async()=>{
+    const pdf=await create(),opened=await request(pdf.documentPath),cookie=opened.headers.get('set-cookie').split(';')[0];
+    server.closeAllConnections();await new Promise(r=>server.close(r));db.close();db=openStore(path.join(temp,'test.sqlite'));await start();
+    assert.equal((await request(pdf.documentPath,{cookie})).status,200);assert.equal(count(pdf),1);
+    db.prepare('UPDATE lessons SET document_file=? WHERE id=?').run(document.document_file,lesson.id);
+    try{assert.equal((await request(pdf.documentPath,{cookie})).status,404);assert.equal(count(pdf),1)}finally{db.prepare('UPDATE lessons SET document_file=? WHERE id=?').run(lesson.document_file,lesson.id)}
+    assert.equal((await request('/api/shares/'+pdf.id,{method:'DELETE',data:{},cookie:owners[0].cookie})).status,200);
+    assert.equal((await request(pdf.documentPath,{cookie})).status,410);assert.equal(db.prepare('SELECT COUNT(*) n FROM share_document_sessions WHERE share_id=?').get(pdf.id).n,0);
+  });
   await t.test('database and sessions survive restart; document-only lessons work and file replacement does not expand a grant',async()=>{
     await new Promise(r=>server.close(r));db.close();db=openStore(path.join(temp,'test.sqlite'));await start();
     assert.equal((await request(share.base+'lesson',{cookie:guestCookie})).status,200);assert.equal(count(share),1);
@@ -89,8 +137,10 @@ test('anonymous lesson shares enforce scoped sessions, quotas, expiry and owner 
     for(const url of [share.base+'lesson',share.base+'media/'+lesson.primary_file])assert.equal((await request(url,{cookie:guestCookie})).status,410);
     assert.equal((await open(share,guestCookie)).status,410);
     const expired=await create({hours:1}),opened=await open(expired),cookie=opened.headers.get('set-cookie').split(';')[0];
+    const pdfOpened=await request(expired.documentPath),pdfCookie=pdfOpened.headers.get('set-cookie').split(';')[0];assert.equal(pdfOpened.status,200);
     clock=expired.expiresAt;
     assert.equal((await open(expired)).status,410);assert.equal((await request(expired.base+'lesson',{cookie})).status,410);assert.equal((await request(expired.base+'media/'+lesson.document_file,{cookie})).status,410);
+    assert.equal((await request(expired.documentPath,{cookie:pdfCookie})).status,410);
     await new Promise(r=>server.close(r));db.close();db=openStore(path.join(temp,'test.sqlite'));await start();
     assert.equal((await request(expired.base+'lesson',{cookie})).status,410);assert.equal((await open(share,guestCookie)).status,410);
     const inactive=await create();db.prepare('UPDATE courses SET active=0 WHERE id=?').run(lesson.course_id);assert.equal((await open(inactive)).status,410);

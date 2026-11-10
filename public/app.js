@@ -55,6 +55,7 @@ function fail(e){toast(e.message||'操作失败')}
 function safe(fn){return(...args)=>{try{return Promise.resolve(fn(...args)).catch(fail)}catch(e){fail(e)}}}
 function openDialog(id){const d=$(id);if(!d.open)d.showModal()}
 let lessonShare=null;
+let documentShare=null;
 let shareTarget=null,shareViewVersion=0,shareListVersion=0;
 function lessonShareUrl(d,l){
   const url=new URL(location.href);
@@ -75,12 +76,17 @@ function showLessonShare(){
 }
 function updateLessonShareMode(){
   ++shareViewVersion;
+  updateDocumentShare();
   const guest=$('share-mode').value==='guest';
   lessonShare=!guest&&shareTarget?{title:shareTarget.title,text:shareTarget.courseTitle+' · '+shareTarget.title,url:shareTarget.loginUrl}:null;
   $('share-guest-options').hidden=!guest;$('share-generate').hidden=!guest;$('share-generate').disabled=false;
   $('share-url').value=lessonShare?.url||'';$('share-url').placeholder='生成后显示链接';
   $('share-copy').disabled=$('share-native').disabled=!lessonShare;
-  $('share-hint').textContent=guest?'无需登录，仅可播放这一讲和阅读配套文稿。同一浏览器刷新不重复计次；有效期从生成时开始。':'对方登录后即可打开这一讲，学习进度各自保存。';
+  $('share-hint').textContent=guest?'播放页和 PDF 各自首次打开计 1 次，同一浏览器刷新不重复计次；有效期从生成时开始。':'对方登录后即可打开这一讲，学习进度各自保存。';
+}
+function updateDocumentShare(path){
+  documentShare=path?new URL(path,location.origin).href:null;
+  $('share-document').hidden=!documentShare;$('share-document-url').value=documentShare||'';
 }
 async function generateLessonShare(){
   if(!shareTarget||$('share-mode').value!=='guest')return;
@@ -90,8 +96,9 @@ async function generateLessonShare(){
     const result=await api('/api/shares','POST',{lessonId:target.lessonId,hours:Number($('share-hours').value),maxOpens:Number($('share-opens').value)});
     if(version!==shareViewVersion||target!==shareTarget)return;
     lessonShare={title:target.title,text:target.courseTitle+' · '+target.title,url:new URL(result.path,location.origin).href};
+    updateDocumentShare(result.documentPath);
     $('share-url').value=lessonShare.url;$('share-copy').disabled=$('share-native').disabled=false;
-    $('share-hint').textContent='无需登录 · '+new Date(result.expiresAt).toLocaleString('zh-CN',{hour12:false})+' 到期 · 最多打开 '+result.maxOpens+' 次。同一浏览器刷新不重复计次。';
+    $('share-hint').textContent='无需登录 · '+new Date(result.expiresAt).toLocaleString('zh-CN',{hour12:false})+' 到期 · 最多打开 '+result.maxOpens+' 次。播放页与 PDF 共用次数，各自首次打开计 1 次。';
     await loadShareList();
   }catch(e){if(version===shareViewVersion){$('share-hint').textContent=e.message;throw e}}
   finally{if(version===shareViewVersion)$('share-generate').disabled=false}
@@ -107,8 +114,14 @@ async function loadShareList(){
 }
 async function copyLessonShare(){
   if(!lessonShare)return;
-  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(lessonShare.url);toast('链接已复制');return}}catch{}
-  const input=$('share-url');input.focus();input.select();input.setSelectionRange(0,input.value.length);
+  return copyShareUrl(lessonShare.url,'share-url');
+}
+async function copyDocumentShare(){
+  if(documentShare)return copyShareUrl(documentShare,'share-document-url');
+}
+async function copyShareUrl(url,inputId){
+  try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(url);toast('链接已复制');return}}catch{}
+  const input=$(inputId);input.focus();input.select();input.setSelectionRange(0,input.value.length);
   try{if(document.execCommand('copy')){toast('链接已复制');return}}catch{}
   toast('请长按或选择链接复制');
 }
@@ -122,7 +135,7 @@ function updateAccount(){
   $('account').innerHTML=user?'<span class="avatar">'+esc(user.username[0].toUpperCase())+'</span>'+esc(user.username):authLabel();
   $('account-name').textContent=user?.username||'';
   $('player-share').hidden=user?.username?.toLowerCase()!=='jack';
-  if($('player-share').hidden){$('share-dialog').close();lessonShare=null;shareTarget=null;++shareViewVersion;++shareListVersion}
+  if($('player-share').hidden){$('share-dialog').close();lessonShare=null;shareTarget=null;updateDocumentShare();++shareViewVersion;++shareListVersion}
 }
 async function loadCatalog(){
   const version=++catalogLoadVersion,shelf=routeName();
@@ -892,6 +905,7 @@ $('player-pdf').onclick=()=>current&&openDocument(current.data,current.lesson);
 $('player-share').innerHTML=icon('share')+'<span>分享链接</span>';
 $('player-share').onclick=showLessonShare;
 $('share-copy').onclick=safe(copyLessonShare);
+$('share-document-copy').onclick=safe(copyDocumentShare);
 $('share-native').onclick=safe(nativeLessonShare);
 $('share-mode').onchange=updateLessonShareMode;
 $('share-hours').onchange=$('share-opens').onchange=updateLessonShareMode;

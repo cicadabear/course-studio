@@ -65,6 +65,17 @@ test('other accounts cannot open the share creator',()=>{
   const f=fixture();f.context.user={username:'OtherUser'};f.run('showLessonShare()');assert.equal(f.calls.length,0);assert.equal(f.nodes.size,0);
 });
 
+test('guest sharing exposes an independently copyable PDF URL and clears it when switching mode or lesson',async()=>{
+  const f=fixture(),path='/api/public-shares/'+'c'.repeat(32)+'/document.pdf?token='+'d'.repeat(64);
+  f.context.api=async(_url,method)=>method==='POST'?{path:'/share#opaque.token',documentPath:path,expiresAt:Date.now()+172800000,maxOpens:10}:{shares:[]};
+  f.run('showLessonShare()');assert.equal(f.nodes.get('share-document').hidden,true);
+  await f.run('generateLessonShare()');assert.equal(f.nodes.get('share-document').hidden,false);
+  assert.equal(f.nodes.get('share-document-url').value,f.context.location.origin+path);
+  await f.run('copyDocumentShare()');assert.deepEqual(f.calls.find(c=>c[0]==='copy'),['copy',f.context.location.origin+path]);
+  f.run("$('share-mode').value='login';updateLessonShareMode()");assert.equal(f.nodes.get('share-document').hidden,true);assert.equal(f.nodes.get('share-document-url').value,'');
+  f.run('showLessonShare()');assert.equal(f.nodes.get('share-document').hidden,true);
+});
+
 test('a shared route opens the requested lesson paused and stale navigation cannot open it',async()=>{
   const source=app.slice(app.indexOf('async function route(){'),app.indexOf('function outboxKey('));
   const calls=[],lesson={id:'b'.repeat(24),mediaId:'media'};

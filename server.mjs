@@ -166,6 +166,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     const headers={'Content-Type':types[file.ext]||'application/octet-stream','Accept-Ranges':'bytes','Cache-Control':grant?'private, no-store':'private, max-age=0','Content-Length':range?range.end-range.start+1:stat.size};
     if(file.ext==='.pdf')headers['Content-Disposition']="inline; filename*=UTF-8''"+encodeURIComponent(path.basename(real)).replace(/'/g,'%27');
     if(range)headers['Content-Range']='bytes '+range.start+'-'+range.end+'/'+stat.size;
+    if(grant?.admit)Object.assign(headers,grant.admit());
     res.writeHead(range?206:200,headers);
     if(req.method==='HEAD'){res.end();return}
     const source=fs.createReadStream(real,range||{});

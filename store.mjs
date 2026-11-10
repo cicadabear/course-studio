@@ -39,6 +39,8 @@ export function openStore(filename=path.join(DATA,'courses.sqlite')) {
     CREATE INDEX IF NOT EXISTS public_shares_owner ON public_shares(owner_id,lesson_id,created_at DESC);
     CREATE TABLE IF NOT EXISTS share_sessions (token_hash TEXT PRIMARY KEY,share_id TEXT NOT NULL REFERENCES public_shares(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS share_sessions_expiry ON share_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS share_document_sessions (token_hash TEXT PRIMARY KEY,share_id TEXT NOT NULL REFERENCES public_shares(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS share_document_sessions_expiry ON share_document_sessions(expires_at);
   `);
   const columns=new Set(db.prepare('PRAGMA table_info(courses)').all().map(c=>c.name));
   if(!columns.has('price_yuan'))db.exec('ALTER TABLE courses ADD COLUMN price_yuan REAL');

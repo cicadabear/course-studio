@@ -61,7 +61,7 @@ function render(data){
   $('guest-audio-controls').hidden=$('guest-rate-label').hidden=!data.audioUrl;
   if(data.audioUrl&&!audio.getAttribute('src')){audio.src=data.audioUrl;audio.load()}
   $('guest-document').hidden=!data.documentUrl;
-  if(data.documentUrl)$('guest-document').href=data.documentUrl;
+  if(data.documentUrl)$('guest-document').href=base+'document.pdf?token='+match[2];
   clearTimeout(expiryTimer);expiryTimer=setTimeout(()=>stop('分享链接已到期'),Math.max(0,data.expiresAt-Date.now()));
   if(!data.audioUrl&&!data.documentUrl)$('guest-status').textContent='原文件暂时不可用。';
   if(data.audioUrl&&'mediaSession' in navigator){

@@ -6,7 +6,7 @@ export const canShare=user=>user?.username?.toLowerCase()==='jack';
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const secret=()=>crypto.randomBytes(32).toString('hex');
 const error=(status,message)=>Object.assign(new Error(message),{status});
-const cookie=req=>String(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('share_sid='))?.slice(10);
+const cookie=(req,name='share_sid')=>String(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(name+'='))?.slice(name.length+1);
 
 // A link grants one lesson only. Raw link/session secrets are never persisted.
 export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=Date.now}){
@@ -32,6 +32,17 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
     if(!session(req,share))throw error(401,'请通过分享链接打开课时');
     return share;
   }
+  function documentGrant(id,token){
+    const share=active(id);
+    if(typeof token!=='string'||! /^[a-f0-9]{64}$/.test(token)||!crypto.timingSafeEqual(Buffer.from(hash(token),'hex'),Buffer.from(share.token_hash,'hex')))throw error(404,'分享链接无效');
+    if(!share.document_file||share.document_file!==share.current_document)throw error(404,'分享的 PDF 不存在');
+    return share;
+  }
+  function documentSession(req,share){
+    const token=cookie(req,'share_pdf_sid');
+    return token&&/^[a-f0-9]{64}$/.test(token)&&db.prepare('SELECT 1 FROM share_document_sessions WHERE token_hash=? AND share_id=? AND expires_at>?').get(hash(token),share.id,clock());
+  }
+  const sessionCookie=(req,name,token,path,expires)=>name+'='+token+'; HttpOnly; SameSite=Lax; Path='+path+'; Max-Age='+Math.max(1,Math.ceil((expires-clock())/1000))+(requestProto(req)==='https'?'; Secure':'');
   const summary=s=>({id:s.id,createdAt:s.created_at,expiresAt:s.expires_at,maxOpens:s.max_opens,openCount:s.open_count,revoked:s.revoked_at!=null});
   const payload=s=>({title:s.title,courseTitle:s.course_title,author:s.author,category:s.category,duration:s.duration,expiresAt:s.expires_at,
     audioUrl:s.audio_file&&s.audio_file===s.primary_file?'/api/public-shares/'+s.id+'/media/'+s.audio_file:null,
@@ -47,7 +58,8 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
       db.prepare('INSERT INTO public_shares(id,token_hash,owner_id,lesson_id,audio_file,document_file,created_at,expires_at,max_opens) VALUES(?,?,?,?,?,?,?,?,?)')
         .run(id,hash(token),user.id,lesson.id,lesson.primary_file,lesson.document_file,created,created+hours*3600000,maxOpens);
       const row=db.prepare('SELECT * FROM public_shares WHERE id=?').get(id);
-      json(res,201,{...summary(row),path:'/share#'+id+'.'+token});return true;
+      const document=lesson.document_file&&db.prepare("SELECT 1 FROM files WHERE id=? AND lesson_id=? AND active=1 AND ext='.pdf'").get(lesson.document_file,lesson.id);
+      json(res,201,{...summary(row),path:'/share#'+id+'.'+token,documentPath:document?'/api/public-shares/'+id+'/document.pdf?token='+token:null});return true;
     }
     if(p==='/api/shares'&&method==='GET'){
       const user=owner(req),id=url.searchParams.get('lessonId');
@@ -61,12 +73,36 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
       const changed=db.prepare('UPDATE public_shares SET revoked_at=? WHERE id=? AND owner_id=?').run(clock(),owned[1],user.id);
       if(!changed.changes)throw error(404,'分享链接不存在');
       db.prepare('DELETE FROM share_sessions WHERE share_id=?').run(owned[1]);
+      db.prepare('DELETE FROM share_document_sessions WHERE share_id=?').run(owned[1]);
       json(res,200,{ok:true});return true;
     }
-    const route=/^\/api\/public-shares\/([a-f0-9]{32})\/(open|lesson|media\/([a-f0-9]{24}))$/.exec(p);
+    const route=/^\/api\/public-shares\/([a-f0-9]{32})\/(open|lesson|document\.pdf|media\/([a-f0-9]{24}))$/.exec(p);
     if(!route)return false;
     res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
     const id=route[1];
+    if(route[2]==='document.pdf'&&['GET','HEAD'].includes(method)){
+      const token=url.searchParams.get('token'),share=documentGrant(id,token);
+      const file=db.prepare("SELECT * FROM files WHERE id=? AND lesson_id=? AND active=1 AND ext='.pdf'").get(share.document_file,share.lesson_id);
+      if(!file)throw error(404,'分享的 PDF 不存在');
+      const validate=()=>{
+        const current=documentGrant(id,token);
+        if(current.document_file!==file.id)throw error(404,'分享的 PDF 不存在');
+        return current;
+      };
+      await stream(req,res,file,{expiresAt:share.expires_at,authorize:validate,admit:()=>transaction(db,()=>{
+        const current=validate();
+        if(documentSession(req,current))return {};
+        if(current.open_count>=current.max_opens)throw error(410,'分享链接的打开次数已用完');
+        // HEAD only inspects the file. A successful GET admits one PDF reader;
+        // later ranges and refreshes reuse its narrowly scoped cookie.
+        if(method==='HEAD')return {};
+        const newToken=secret();
+        db.prepare('DELETE FROM share_document_sessions WHERE expires_at<=?').run(clock());
+        db.prepare('UPDATE public_shares SET open_count=open_count+1 WHERE id=? AND open_count<max_opens').run(id);
+        db.prepare('INSERT INTO share_document_sessions VALUES(?,?,?)').run(hash(newToken),id,current.expires_at);
+        return {'Set-Cookie':sessionCookie(req,'share_pdf_sid',newToken,p,current.expires_at)};
+      })});return true;
+    }
     if(route[2]==='open'&&method==='POST'){
       const b=await body(req),token=b.token;
       if(typeof token!=='string'||! /^[a-f0-9]{64}$/.test(token))throw error(404,'分享链接无效');
@@ -81,7 +117,7 @@ export function publicShareRoutes(db,{auth,body,json,stream,requestProto,clock=D
         db.prepare('INSERT INTO share_sessions VALUES(?,?,?)').run(hash(newToken),id,s.expires_at);
         created=true;return s;
       });
-      const headers=created?{'Set-Cookie':'share_sid='+newToken+'; HttpOnly; SameSite=Lax; Path=/api/public-shares/'+id+'/; Max-Age='+Math.max(1,Math.ceil((share.expires_at-clock())/1000))+(requestProto(req)==='https'?'; Secure':'')}:{};
+      const headers=created?{'Set-Cookie':sessionCookie(req,'share_sid',newToken,'/api/public-shares/'+id+'/',share.expires_at)}:{};
       json(res,200,payload(share),headers);return true;
     }
     if(route[2]==='lesson'&&method==='GET'){
