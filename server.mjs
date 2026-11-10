@@ -53,6 +53,24 @@ export function hostIsPublic(host,publicHosts=[]) {
   if(!bare)return false;
   return publicHosts.map(s=>String(s).toLowerCase()).includes(bare);
 }
+// Match the actual Host, never X-Forwarded-Host. Local maintenance requires a local connection too.
+export function accessHostAllowed(req,allowedHosts=[]) {
+  if(!allowedHosts.length)return true;
+  const raw=req.headers.host;
+  if(typeof raw!=='string'||!raw||/[^\x21-\x7e]|[\\/@?#,%]/.test(raw))return false;
+  let url;try{url=new URL('http://'+raw)}catch{return false}
+  if(url.username||url.password||url.pathname!=='/'||url.search||url.hash||url.port==='0')return false;
+  const name=url.hostname.toLowerCase().replace(/^\[|\]$/g,'').replace(/\.$/,'');
+  const literal=raw.replace(/:\d+$/,'').replace(/^\[|\]$/g,'').toLowerCase();
+  // Do not accept shorthand, hex or octal IP forms normalized by URL parsing.
+  if(isIP(name)&&literal!==name)return false;
+  const loopback=ip=>ip==='::1'||isIP(ip)===4&&ip.startsWith('127.');
+  if((name==='localhost'||loopback(name))&&loopback(normalizeIp(req.socket.remoteAddress))&&loopback(clientAddress(req).ip))return true;
+  return allowedHosts.some(value=>{
+    if(value==='192.168.*.*')return isIP(name)===4&&name.startsWith('192.168.');
+    return typeof value==='string'&&name===value.toLowerCase().replace(/\.$/,'');
+  });
+}
 function json(res,status,value,headers={}) {res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers});res.end(JSON.stringify(value));}
 async function body(req) {
   let n=0;const chunks=[];
@@ -82,6 +100,8 @@ export const LOGIN_FAIL_LIMIT=5;
 export const LOGIN_LOCK_MS=12*60*60*1000;
 export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
   const publicHosts=Array.isArray(options.publicHosts)?options.publicHosts:(Array.isArray(config.publicHosts)?config.publicHosts:[]);
+  const allowedHosts=options.allowedHosts??config.allowedHosts??[];
+  if(!Array.isArray(allowedHosts)||allowedHosts.some(value=>typeof value!=='string'||!value))throw new Error('allowedHosts must be an array of host names.');
   const client=req=>clientAddress(req);
   const clientIp=req=>client(req).ip;
   const limits=new Map();
@@ -165,6 +185,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     res.setHeader('Referrer-Policy','same-origin');
     res.setHeader('X-Frame-Options','SAMEORIGIN');
     try {
+      if(!accessHostAllowed(req,allowedHosts))throw error(403,'此访问地址未开放');
       const url=new URL(req.url,'http://localhost'),p=url.pathname,method=req.method;
       if(!['GET','HEAD','POST','PUT','DELETE'].includes(method))throw error(405,'不支持该操作');
       if(['POST','PUT','DELETE'].includes(method)){

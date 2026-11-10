@@ -9,5 +9,6 @@
     {"root": "./media/youth", "label": "少年课程", "shelf": "youth"}
   ],
   "scanRulesFile": "",
-  "publicHosts": []
+  "publicHosts": [],
+  "allowedHosts": []
 }

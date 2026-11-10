@@ -27,6 +27,7 @@ npm start
 - `mediaRoot` / `mediaRoots`：主课程目录和附加目录，可改成绝对路径；`collections` 中的 `root` 要保持一致。
 - `collections`：目录名称与分组；`shelf` 为 `courses` 或 `youth`，分别显示在课程和少年课程中。
 - `host` / `port`：默认仅本机访问；需要局域网访问时把 `host` 改为 `0.0.0.0`，并自行设置防火墙。
+- `allowedHosts`：可选访问地址白名单，留空不限制。域名按完整名称匹配，不自动包含子域名；`192.168.*.*` 允许该网段的有效 IPv4 地址。启用后，其他访问地址的页面、接口和媒体请求均返回 403；本机回环访问保留供启动及维护使用。反向代理须保留原始 `Host`。
 - `publicHosts`：可选的额外禁止注册地址列表。公网域名默认禁止注册，无需逐个添加。应用直接读取 `X-Forwarded-For`（缺省使用 `X-Real-IP`）和 `X-Forwarded-Proto`，无需代理 IP 白名单；代理应传递访问域名并覆盖访客地址。
 - `scanRulesFile`：可选扫描排除规则；参考 `scan-rules.example.json`，留空则不使用规则。
 
