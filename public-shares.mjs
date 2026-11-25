@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import {transaction} from './store.mjs';
 
-export const SHARE_HOURS=48,SHARE_OPENS=10;
+export const SHARE_HOURS=168,SHARE_OPENS=10;
 export const canShare=user=>user?.username?.toLowerCase()==='jack';
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const secret=()=>crypto.randomBytes(32).toString('hex');

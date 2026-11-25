@@ -10,6 +10,7 @@ import {openStore,PROJECT,config,transaction} from './store.mjs';
 import {scan} from './scanner.mjs';
 import {courseMetadata,tagOrder,tagOrders} from './catalog-tags.mjs';
 import {publicShareRoutes} from './public-shares.mjs';
+import {loginShareRoutes} from './login-shares.mjs';
 const scrypt=promisify(crypto.scrypt);
 const digest=s=>crypto.createHash('sha256').update(s).digest('hex');
 const now=()=>Date.now();
@@ -133,7 +134,10 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
   const clearFailures=ip=>db.prepare('DELETE FROM auth_locks WHERE ip=?').run(ip);
   function auth(req,required=true) {
     const token=String(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('sid='))?.slice(4);
-    const u=token&&db.prepare('SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>?').get(digest(token),now());
+    const time=(options.clock||now)();
+    const u=token&&db.prepare(`SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id
+      LEFT JOIN login_share_sessions ls ON ls.session_token=s.token LEFT JOIN login_shares sh ON sh.id=ls.share_id
+      WHERE s.token=? AND s.expires_at>? AND (ls.session_token IS NULL OR (sh.id IS NOT NULL AND sh.target_user_id=s.user_id AND sh.revoked_at IS NULL AND sh.expires_at>?))`).get(digest(token),time,time);
     if(!u&&required)throw error(401,'请先登录');
     return u||null;
   }
@@ -181,6 +185,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
     source.pipe(res);
   }
   const shares=publicShareRoutes(db,{auth,body,json,stream,requestProto,clock:options.clock});
+  const loginShares=loginShareRoutes(db,{auth,body,json,requestProto,clock:options.clock});
   const handler=async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Referrer-Policy','same-origin');
@@ -196,6 +201,7 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
       if(p==='/api/health'&&method==='GET')return json(res,200,{ok:true,service:'course-studio',catalogReady:!!db.prepare("SELECT value FROM meta WHERE key='scan'").get()});
       if(p==='/api/me'&&method==='GET')return json(res,200,{user:auth(req,false),canRegister:fromLocalNetwork(req)});
       if(await shares(req,res,p,method,url))return;
+      if(await loginShares(req,res,p,method,url))return;
       if((p==='/api/register'||p==='/api/login')&&method==='POST'){
         const register=p.endsWith('register'),ip=clientIp(req);
         // 登录不再单独限流，改由连错 5 次锁 12 小时兜底；注册仍保留每分钟额度。
@@ -399,12 +405,12 @@ export function createHandler(db,mediaRoot=config.mediaRoot,options={}) {
         if(!file)throw error(404,'文件不存在');
         return await stream(req,res,file);
       }
-      const staticFiles={'/':'index.html','/share':'share.html','/share.js':'share.js','/app.js':'app.js','/styles.css':'styles.css','/icon.svg':'icon.svg','/media-artwork.png':'media-artwork.png','/apple-touch-icon.png':'apple-touch-icon.png'};
+      const staticFiles={'/share-login':'login-share.html','/login-share.js':'login-share.js','/':'index.html','/share':'share.html','/share.js':'share.js','/app.js':'app.js','/styles.css':'styles.css','/icon.svg':'icon.svg','/media-artwork.png':'media-artwork.png','/apple-touch-icon.png':'apple-touch-icon.png'};
       if(staticFiles[p]&&['GET','HEAD'].includes(method)){
         const name=staticFiles[p],data=await fsp.readFile(path.join(PROJECT,'public',name));
         const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png'};
         res.setHeader('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'");
-        if(p==='/share'){res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive')}
+        if(p==='/share'||p==='/share-login'){res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive')}
         res.writeHead(200,{'Content-Type':types[path.extname(name)],'Cache-Control':'no-cache','Content-Length':data.length});return res.end(method==='HEAD'?undefined:data);
       }
       throw error(404,'没有找到这个页面');

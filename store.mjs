@@ -41,6 +41,11 @@ export function openStore(filename=path.join(DATA,'courses.sqlite')) {
     CREATE INDEX IF NOT EXISTS share_sessions_expiry ON share_sessions(expires_at);
     CREATE TABLE IF NOT EXISTS share_document_sessions (token_hash TEXT PRIMARY KEY,share_id TEXT NOT NULL REFERENCES public_shares(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS share_document_sessions_expiry ON share_document_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS login_shares (id TEXT PRIMARY KEY,token_hash TEXT NOT NULL,owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,target_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id TEXT NOT NULL REFERENCES lessons(id),created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,max_opens INTEGER NOT NULL,open_count INTEGER NOT NULL DEFAULT 0,revoked_at INTEGER);
+    CREATE INDEX IF NOT EXISTS login_shares_owner ON login_shares(owner_id,lesson_id,created_at DESC);
+    CREATE TABLE IF NOT EXISTS login_share_sessions (session_token TEXT PRIMARY KEY REFERENCES sessions(token) ON DELETE CASCADE,share_id TEXT NOT NULL REFERENCES login_shares(id) ON DELETE CASCADE);
+    CREATE INDEX IF NOT EXISTS login_share_sessions_link ON login_share_sessions(share_id);
+    CREATE TRIGGER IF NOT EXISTS login_share_session_removed AFTER DELETE ON login_share_sessions BEGIN DELETE FROM sessions WHERE token=OLD.session_token; END;
   `);
   const columns=new Set(db.prepare('PRAGMA table_info(courses)').all().map(c=>c.name));
   if(!columns.has('price_yuan'))db.exec('ALTER TABLE courses ADD COLUMN price_yuan REAL');

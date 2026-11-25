@@ -37,7 +37,7 @@ test('anonymous lesson shares enforce scoped sessions, quotas, expiry and owner 
     assert.equal((await request('/api/shares',{method:'POST',data:{lessonId:lesson.id},cookie:owners[1].cookie})).status,403);
     for(const values of [{hours:0},{hours:169},{hours:1.2},{hours:'48'},{maxOpens:0},{maxOpens:101},{lessonId:'invalid'}])assert.equal((await request('/api/shares',{method:'POST',cookie:owners[0].cookie,data:{lessonId:lesson.id,...values}})).status,400);
     assert.equal((await request('/api/shares',{method:'POST',cookie:owners[0].cookie,data:{lessonId:lesson.id},headers:{Origin:'https://evil.example'}})).status,403);
-    share=await create();assert.equal(share.expiresAt-clock,48*3600000);assert.equal(share.maxOpens,10);
+    share=await create();assert.equal(share.expiresAt-clock,168*3600000);assert.equal(share.maxOpens,10);
     const raw=JSON.stringify(db.prepare('SELECT * FROM public_shares WHERE id=?').get(share.id));assert.ok(!raw.includes(share.token));
     const list=await request('/api/shares?lessonId='+lesson.id,{cookie:owners[0].cookie});assert.equal(list.data.shares.length,1);assert.ok(!JSON.stringify(list.data).includes(share.token));
     assert.equal((await request('/api/shares?lessonId='+lesson.id,{cookie:owners[1].cookie})).status,403);
